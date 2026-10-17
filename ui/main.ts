@@ -50,14 +50,16 @@ async function boot() {
   }
   if (!gl || !gpuOk(gpu)) return;
   const viewer = new Viewer(stage, canvas, gl);
+  viewer.onDraw(() => { zoom.textContent = viewer.zoomLabel(); });
   const library = new Library();
   await library.refresh();
   const exportDialog = new ExportDialog();
 
   const exif = h('span', { class: 'footer__exif mono' });
+  const zoom = h('span', { class: 'mono muted', title: 'Scroll to zoom, drag to move, double-click for 100%' });
   const footer = h('div', { class: 'footer' },
-    h('span', { class: 'badge-ok' }, icon('check', 14), 'Metadata kept'),
     exif,
+    zoom,
     h('span', { class: 'muted', style: { fontSize: '12px' } }, '← → to switch photos'));
 
   const sidebar = new Sidebar(() => openFolder(), (rel) => openPhoto(rel));
@@ -66,7 +68,7 @@ async function boot() {
     next: () => step(1),
     undo: () => store.step('undo').catch(report),
     redo: () => store.step('redo').catch(report),
-    toggleBefore: () => { store.before = !store.before; store.notify(); },
+    toggleBefore: () => { store.compare = !store.compare; store.notify(); },
     exportPhoto: () => exportDialog.open().catch(report),
   });
 

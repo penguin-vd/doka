@@ -94,7 +94,10 @@ class Store {
   folder: FolderState | null = null;
   photo: Photo | null = null;
   tab: Tab = 'adjust';
+  // Holding \\: the whole original.
   before = false;
+  // Before/after with a divider (the header's button).
+  compare = false;
   // Photos picked with Ctrl or Shift for a batch export.
   selected = new Set<string>();
   private listeners = new Set<Listener>();

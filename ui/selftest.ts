@@ -27,13 +27,14 @@ const decode = (c: number) => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) /
 const encode = (l: number) => (l <= 0.0031308 ? 12.92 * l : 1.055 * Math.pow(l, 1 / 2.4) - 0.055);
 
 /** Renders `linear` (w×h RGB) with the recipe, returns the 8-bit RGBA output and its size. */
-function run(p: Pipeline, w: number, h: number, linear: number[], patch: unknown): { px: Uint8Array; w: number; h: number } {
+function run(p: Pipeline, w: number, h: number, linear: number[], patch: unknown, view?: [number, number, number, number]): { px: Uint8Array; w: number; h: number } {
   const gl = p.gl;
   p.setSource(w, h, new Uint16Array(linear.map(toHalf)));
   const recipe: Recipe = complete(patch);
-  const [ow, oh] = p.outputSize(recipe);
+  let [ow, oh] = p.outputSize(recipe);
+  if (view) { ow = Math.round(ow * view[2]); oh = Math.round(oh * view[3]); }
   const t = target(gl, ow, oh, gl.RGBA8, gl.UNSIGNED_BYTE);
-  p.render(recipe, { target: t, width: ow, height: oh });
+  p.render(recipe, { target: t, width: ow, height: oh, view });
   const px = new Uint8Array(ow * oh * 4);
   gl.bindFramebuffer(gl.FRAMEBUFFER, t.fbo);
   gl.readPixels(0, 0, ow, oh, gl.RGBA, gl.UNSIGNED_BYTE, px);
@@ -122,6 +123,11 @@ export function selfTest(): Result[] {
   check('crop keeps the rectangle asked for', () => {
     const r = run(p, 3, 2, six, { crop: { rect: [2 / 3, 0, 1 / 3, 1] } });
     if (r.w !== 1 || r.h !== 2) return `size ${r.w}×${r.h}`;
+    return [at(r, 0, 0), at(r, 0, 1)].join() === '2,5' || `got ${[at(r, 0, 0), at(r, 0, 1)]}`;
+  });
+
+  check('a zoomed view shows that part of the photo', () => {
+    const r = run(p, 3, 2, six, {}, [2 / 3, 0, 1 / 3, 1]);
     return [at(r, 0, 0), at(r, 0, 1)].join() === '2,5' || `got ${[at(r, 0, 0), at(r, 0, 1)]}`;
   });
 

@@ -26,7 +26,7 @@ export class Header {
   constructor(a: HeaderActions) {
     this.undoBtn = iconButton('undo', 'Undo (Ctrl+Z)', a.undo);
     this.redoBtn = iconButton('redo', 'Redo (Ctrl+Shift+Z)', a.redo);
-    this.beforeBtn = h('button', { type: 'button', class: 'btn btn--outline', onclick: a.toggleBefore, title: 'Hold \\ to see the original' }, icon('compare'), 'Before / after');
+    this.beforeBtn = h('button', { type: 'button', class: 'btn btn--outline', onclick: a.toggleBefore, title: 'Drag the line across the photo; hold \\ to see the whole original' }, icon('compare'), 'Before / after');
     this.exportBtn = h('button', { type: 'button', class: 'btn btn--accent', onclick: a.exportPhoto, title: 'Export (Ctrl+E)' }, icon('export'), 'Export');
     this.el = h('header', { class: 'bar' },
       h('div', { class: 'crumbs' },
@@ -53,7 +53,6 @@ export class Header {
     this.redoBtn.disabled = !p?.canRedo;
     this.beforeBtn.disabled = !p;
     this.exportBtn.disabled = !p;
-    this.beforeBtn.setAttribute('aria-pressed', String(store.before));
-    this.beforeBtn.lastChild!.textContent = store.before ? 'Showing original' : 'Before / after';
+    this.beforeBtn.setAttribute('aria-pressed', String(store.compare));
   }
 }

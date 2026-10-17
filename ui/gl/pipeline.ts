@@ -35,6 +35,10 @@ export interface Output {
   dither?: number;
   // The whole photo, for the Crop tab (it draws the crop over it).
   uncropped?: boolean;
+  // The part of the output to draw, x, y, w, h in 0..1: zoom and pan. Default: all of it.
+  view?: [number, number, number, number];
+  // Only this rectangle of the target is drawn (x, y from the bottom-left, pixels): before/after.
+  scissor?: [number, number, number, number];
 }
 
 // Halation's blur: sigma as a share of the photo's long edge.
@@ -205,6 +209,11 @@ export class Pipeline {
     const turns = Math.round(recipe.crop.rotate / 90) % 4;
     const odd = turns % 2 === 1;
     const rect = out.uncropped ? [0, 0, 1, 1] : recipe.crop.rect;
+    const view = out.view ?? [0, 0, 1, 1];
+    if (out.scissor) {
+      gl.enable(gl.SCISSOR_TEST);
+      gl.scissor(...out.scissor);
+    }
     this.pass(this.progs.finish, out.target, { u_image: curTarget.texture, u_glow: this.glowA!.texture }, {
       u_halation: halation,
       u_rect: rect,
@@ -215,10 +224,12 @@ export class Pipeline {
       u_vignette: recipe.vignette / 100,
       u_grain: recipe.grain.amount / 100,
       u_grain_size: recipe.grain.size / 100,
-      u_out: [out.width, out.height],
+      u_out: [out.width / view[2], out.height / view[3]],
+      u_view: view,
       u_p3: out.p3 ? 1 : 0,
       u_dither: out.dither ?? 0,
     }, out.width, out.height, out.target === null);
+    gl.disable(gl.SCISSOR_TEST);
 
     gl.bindTexture(gl.TEXTURE_2D, curTarget.texture);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);

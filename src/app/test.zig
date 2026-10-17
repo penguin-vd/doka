@@ -227,3 +227,22 @@ test "an export never takes a name that's already there" {
     defer testing.allocator.free(second);
     try testing.expect(std.mem.endsWith(u8, second, "/P1-edit-2.jpg"));
 }
+
+const Pool = @import("jobs.zig");
+
+test "a background task asked for now jumps every queue; background runs newest first" {
+    // Not started: the queues alone.
+    var pool: Pool = .{ .io = testing.io };
+    const noop = struct {
+        fn f(_: *Pool.Task) void {}
+    }.f;
+    var tasks: [4]Pool.Task = @splat(.{ .run = noop, .done = noop });
+    pool.submit(&tasks[0], .urgent);
+    pool.submit(&tasks[1], .background);
+    pool.submit(&tasks[2], .background);
+    pool.submit(&tasks[3], .background);
+    pool.promote(&tasks[1]);
+    const order = [_]*Pool.Task{ &tasks[1], &tasks[0], &tasks[3], &tasks[2] };
+    for (order) |want| try testing.expectEqual(want, pool.queues[0].pop() orelse pool.queues[1].pop().?);
+    try testing.expectEqual(null, pool.queues[1].pop());
+}

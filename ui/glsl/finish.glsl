@@ -11,7 +11,8 @@ uniform vec2 u_size;       // the rotated photo's size, pixels at any scale
 uniform float u_vignette;  // 0..1
 uniform float u_grain;     // 0..1
 uniform float u_grain_size;
-uniform vec2 u_out;        // output size, pixels
+uniform vec2 u_out;        // the whole output's size, pixels (bigger than the target when zoomed in)
+uniform vec4 u_view;       // the part of the output drawn: x, y, w, h in 0..1 (zoom and pan)
 uniform bool u_p3;         // Display P3 out, else sRGB
 uniform float u_dither;    // one step of the output's bit depth; 0 for float
 
@@ -40,12 +41,15 @@ float noise(vec2 p) {
 }
 
 void main() {
-  vec2 uv = source(v_uv);
+  // Where in the whole output this pixel is: everything below is relative to that, so zooming
+  // shows the same grain and vignette, only bigger.
+  vec2 ov = u_view.xy + v_uv * u_view.zw;
+  vec2 uv = source(ov);
   vec3 lin = srgbDecode(texture(u_image, uv).rgb);
   if (u_halation > 0.0) lin += texture(u_glow, uv).rgb * vec3(1.0, 0.32, 0.12) * u_halation * 1.6;
 
   if (u_vignette > 0.0) {
-    vec2 d = (v_uv - 0.5) * vec2(u_out.x / u_out.y, 1.0);
+    vec2 d = (ov - 0.5) * vec2(u_out.x / u_out.y, 1.0);
     float r = length(d) / length(vec2(u_out.x / u_out.y, 1.0) * 0.5);
     lin *= 1.0 - u_vignette * 0.85 * smoothstep(0.3, 1.1, r);
   }
@@ -56,7 +60,7 @@ void main() {
     // grains (a small preview) the grain is averaged away, as it would be on film.
     float longEdge = max(u_out.x, u_out.y);
     float cells = mix(2200.0, 500.0, u_grain_size);
-    vec2 g = v_uv * u_out / longEdge * cells;
+    vec2 g = ov * u_out / longEdge * cells;
     float n = noise(g) + noise(g * 1.7 + 19.1) - 1.0;
     float l = luma(c);
     float amount = u_grain * 0.16 * pow(clamp(4.0 * l * (1.0 - l), 0.0, 1.0), 0.6) * sqrt(min(1.0, longEdge / cells));

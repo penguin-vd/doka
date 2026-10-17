@@ -33,6 +33,13 @@ Changed for what someone would notice, a line under Decided for a choice whose r
 - Faster: the first photo is up ~350 ms after start (the photo decodes while the shaders compile),
   thumbnails use every core (200 in ~1.1 s, instant once cached), memory is handed back after
   decodes and exports, release builds are stripped (1.3 MB). Ctrl+O, Ctrl+E and Ctrl+Y.
+- Scroll to zoom (around the cursor), drag to move, double-click for 100%; past the preview's
+  pixels the full-size photo loads. Before / after is a line to drag across the photo; holding
+  `\` still shows the whole original.
+- Switching photos no longer shows the old photo with the new one's crop, and no longer waits
+  behind thumbnails; long folders scroll smoothly (only changed thumbnails are touched, ones off
+  screen aren't painted, the newest thumbnails are made first).
+- The footer's "Metadata kept" and the sidebar's hint are gone (the hint is in the thumbnails' tooltip).
 - `doka --shot out.png [--eval js]` draws the app off the screen and saves a picture: how Claude
   looks at it without taking over the desktop. `zig build probe` runs the pipeline's tests on the GPU.
 
@@ -78,5 +85,7 @@ Changed for what someone would notice, a line under Decided for a choice whose r
 - The preview is a fixed 2048 px on its long edge, chosen by the app rather than the page, so the
   app can decode the photo before the page asks for it.
 - libvips' operation cache is off: it kept decoded photos alive; nothing here asks twice.
+- Zoom and before/after happen in the finish pass (a window onto the output, a scissor for the
+  original), so grain, vignette and halation stay true to the whole photo at any zoom.
 - Styling is one `ui/style.css`: the design's colours, type and sizes as tokens on `:root`, and a
   few component classes (`.bar`, `.btn`, `.status`). No Tailwind: it needs a build or a CDN.

@@ -111,7 +111,11 @@ pub fn lookup(self: *Images, rel: []const u8, edge: u32) ?*Entry {
 }
 
 fn decode(self: *Images, rel: []const u8, edge: u32, priority: Pool.Priority) !*Decode {
-    for (self.in_flight.items) |d| if (d.edge == edge and std.mem.eql(u8, d.rel, rel)) return d;
+    for (self.in_flight.items) |d| if (d.edge == edge and std.mem.eql(u8, d.rel, rel)) {
+        // Queued as a neighbour behind hundreds of thumbnails, and now it's wanted.
+        if (priority == .urgent) self.pool.promote(&d.task);
+        return d;
+    };
     const d = try self.gpa.create(Decode);
     errdefer self.gpa.destroy(d);
     d.* = .{

@@ -12,13 +12,17 @@ export class Sidebar {
   private list = h('div', { class: 'sidebar__list' });
   private buttons: HTMLButtonElement[] = [];
   private shownFolder: string | null = null;
+  // What the buttons show now: only what changed is touched (a slider updates the store per pixel).
+  private current = -1;
+  private edited: boolean[] = [];
+  private selected = new Set<string>();
 
   constructor(onOpenFolder: () => void, onPick: (rel: string) => void) {
     this.el = h('nav', { class: 'sidebar', 'aria-label': 'Photos in folder' },
       h('button', { type: 'button', class: 'btn btn--small', onclick: onOpenFolder, title: 'Open folder (Ctrl+O)' }, icon('folder'), 'Open folder'),
       h('div', { class: 'sidebar__head' }, this.name, this.count),
       this.list,
-      h('p', { class: 'sidebar__note' }, 'Dot = edited. Originals are never changed. Ctrl or Shift-click to pick several for export.'));
+    );
     this.list.addEventListener('click', (e) => {
       const b = (e.target as Element).closest('button.thumb') as HTMLButtonElement | null;
       if (!b || !b.dataset.rel) return;
@@ -49,6 +53,9 @@ export class Sidebar {
       clear(this.list);
       return;
     }
+    this.current = -1;
+    this.edited = f.photos.map(() => false);
+    this.selected = new Set();
     this.name.textContent = f.name;
     this.name.title = f.path;
     this.count.textContent = `${f.photos.length} photos`;
@@ -64,7 +71,7 @@ export class Sidebar {
         if (dir) frag.append(h('h3', { class: 'group-title' }, dir));
         frag.append(grid);
       }
-      const b = h('button', { type: 'button', class: 'thumb', 'aria-label': p.rel, title: p.rel },
+      const b = h('button', { type: 'button', class: 'thumb', 'aria-label': p.rel, title: `${p.rel}\nCtrl or Shift-click to pick several for export` },
         h('img', { src: photoUrl('thumb', p.rel), loading: 'lazy', decoding: 'async', alt: '' }));
       b.dataset.rel = p.rel;
       grid.append(b);
@@ -81,17 +88,27 @@ export class Sidebar {
     }
     if (!f) return;
     const current = store.photo?.index ?? -1;
-    this.buttons.forEach((b, i) => {
-      const on = i === current;
-      if ((b.getAttribute('aria-current') === 'true') !== on) {
-        b.setAttribute('aria-current', String(on));
-        if (on) b.scrollIntoView({ block: 'nearest' });
+    if (current !== this.current) {
+      this.buttons[this.current]?.setAttribute('aria-current', 'false');
+      const b = this.buttons[current];
+      if (b) {
+        b.setAttribute('aria-current', 'true');
+        b.scrollIntoView({ block: 'nearest' });
       }
-      b.classList.toggle('thumb--selected', store.selected.size > 1 && store.selected.has(f.photos[i].rel));
-      const edited = f.photos[i].edited;
-      const dot = b.querySelector('.thumb__dot');
-      if (edited && !dot) b.append(h('span', { class: 'thumb__dot', 'aria-hidden': 'true' }));
-      if (!edited && dot) dot.remove();
+      this.current = current;
+    }
+    // Edited dots: the open photo is the one that changes, but a new folder state may change any.
+    f.photos.forEach((p, i) => {
+      if (p.edited === this.edited[i]) return;
+      this.edited[i] = p.edited;
+      const b = this.buttons[i];
+      if (p.edited) b.append(h('span', { class: 'thumb__dot', 'aria-hidden': 'true' }));
+      else b.querySelector('.thumb__dot')?.remove();
     });
+    const sel = store.selected.size > 1 ? store.selected : new Set<string>();
+    if (sel.size !== this.selected.size || [...sel].some((r) => !this.selected.has(r))) {
+      this.buttons.forEach((b, i) => b.classList.toggle('thumb--selected', sel.has(f.photos[i].rel)));
+      this.selected = new Set(sel);
+    }
   }
 }
