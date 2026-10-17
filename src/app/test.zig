@@ -27,8 +27,100 @@ test "a GPU report fails without float targets or on a software renderer" {
 }
 
 test "app:// URIs find the page's files" {
-    try testing.expectEqualStrings("text/html", ui.find(ui.start).?.mime);
+    try testing.expectEqualStrings("text/html", std.mem.span(ui.find(ui.start).?.mime));
     try testing.expectEqualStrings("main.js", ui.find("app://ui/main.js?v=2").?.path);
     try testing.expect(ui.find("app://ui/../secret") == null);
+    try testing.expect(ui.find("app://ui/photo/a.jpg") == null);
     try testing.expect(ui.find("https://ui/index.html") == null);
+}
+
+test "percent-encoded paths decode, bad escapes don't" {
+    const d = (try ui.percentDecode(testing.allocator, "2024%20Japan/P1.JPG")).?;
+    defer testing.allocator.free(d);
+    try testing.expectEqualStrings("2024 Japan/P1.JPG", d);
+    try testing.expectEqual(null, try ui.percentDecode(testing.allocator, "bad%2"));
+    try testing.expectEqual(null, try ui.percentDecode(testing.allocator, "bad%zz"));
+}
+
+const Session = @import("session.zig");
+const folders = @import("folder.zig");
+
+fn patch(a: std.mem.Allocator, json: []const u8) !std.json.Value {
+    return std.json.parseFromSliceLeaky(std.json.Value, a, json, .{});
+}
+
+test "one slider drag undoes in one step; a new gesture is a new step" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var s = try Session.init(testing.allocator, .{});
+    defer s.deinit();
+    for ([_][]const u8{ "{\"edits\":{\"exposure\":0.1}}", "{\"edits\":{\"exposure\":0.2}}", "{\"edits\":{\"exposure\":0.3}}" }) |p| {
+        _ = try s.change(a, .{ .patch = try patch(a, p), .gesture = 7, .now = 0 });
+    }
+    _ = try s.change(a, .{ .patch = try patch(a, "{\"edits\":{\"contrast\":10}}"), .gesture = 8, .now = 0 });
+    try testing.expect(try s.undo());
+    try testing.expectEqual(0.3, (try s.recipe(a)).edits.exposure);
+    try testing.expectEqual(0, (try s.recipe(a)).edits.contrast);
+    try testing.expect(try s.undo());
+    try testing.expectEqual(0, (try s.recipe(a)).edits.exposure);
+    try testing.expect(!try s.undo());
+    try testing.expect(try s.redo());
+    try testing.expectEqual(0.3, (try s.recipe(a)).edits.exposure);
+}
+
+test "an edit after undo drops what could be redone" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var s = try Session.init(testing.allocator, .{});
+    defer s.deinit();
+    _ = try s.change(a, .{ .patch = try patch(a, "{\"halation\":10}"), .now = 0 });
+    _ = try s.undo();
+    _ = try s.change(a, .{ .patch = try patch(a, "{\"halation\":20}"), .now = 0 });
+    try testing.expect(!s.canRedo());
+}
+
+test "Claude's changes undo together from the bar, and Keep clears the bar" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var s = try Session.init(testing.allocator, .{});
+    defer s.deinit();
+    _ = try s.change(a, .{ .patch = try patch(a, "{\"edits\":{\"exposure\":0.3}}"), .now = 0 });
+    _ = try s.change(a, .{ .patch = try patch(a, "{\"look\":{\"name\":\"film.cube\",\"strength\":70}}"), .by = .claude, .now = 1, .note = "film look 70%" });
+    const r = try s.change(a, .{ .patch = try patch(a, "{\"grain\":{\"amount\":25}}"), .by = .claude, .now = 2, .note = "grain 25" });
+    try testing.expectEqual(.claude, r.updatedBy);
+    try testing.expectEqualStrings("film look 70%; grain 25", s.claude_note.items);
+    try testing.expect(try s.undoClaude());
+    const back = try s.recipe(a);
+    try testing.expectEqual(0.3, back.edits.exposure);
+    try testing.expectEqualStrings("none", back.look.name);
+    try testing.expect(!s.claudePending());
+    // Redo brings Claude's version back.
+    try testing.expect(try s.redo());
+    try testing.expectEqual(25, (try s.recipe(a)).grain.amount);
+
+    _ = try s.change(a, .{ .patch = try patch(a, "{\"halation\":5}"), .by = .claude, .now = 3 });
+    s.keepClaude();
+    try testing.expect(!s.claudePending());
+    try testing.expect(!try s.undoClaude());
+    try testing.expectEqual(5, (try s.recipe(a)).halation);
+}
+
+test "a folder lists its JPEGs, subfolders included, hidden ones not" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    for ([_][]const u8{ "b.jpg", "a.JPG", "trip/c.jpeg", ".photo-editor/thumbs/a.JPG", ".hidden/d.jpg", "notes.txt", "trip/e.png" }) |p| {
+        if (std.fs.path.dirname(p)) |d| try tmp.dir.createDirPath(io, d);
+        try tmp.dir.writeFile(io, .{ .sub_path = p, .data = "x" });
+    }
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const photos = try folders.scan(io, arena.allocator(), testing.allocator, tmp.dir);
+    try testing.expectEqual(3, photos.len);
+    try testing.expectEqualStrings("a.JPG", photos[0].rel);
+    try testing.expectEqualStrings("b.jpg", photos[1].rel);
+    try testing.expectEqualStrings("trip/c.jpeg", photos[2].rel);
 }

@@ -14,7 +14,9 @@ A small, fast Linux photo editor in Zig, with a webview UI, a GLSL processing pi
 ```sh
 zig build run          # the editor
 zig build test         # unit tests (the app's, and photo-core's as a second binary)
-zig build probe        # opens the window hidden, checks WebGL2 float render targets, quits; fails without them
+zig build probe        # hidden window: WebGL2 float targets, then the pipeline's tests on the GPU (ui/selftest.ts)
+./zig-out/bin/doka --shot out.png testdata/photos [--tab looks] [--eval 'await test.edit({...})']
+                       # the app drawn off the screen, saved as a PNG: how to look at it; never open a visible window
 scripts/setup.sh       # once per clone: git's pre-commit (format, changelog, test, probe)
 ```
 
@@ -23,6 +25,10 @@ Layout: `src/core/` is `photo-core` (libvips, no window: `decode`, `encode` + `e
 (`c.zig`) and the page's files (`ui.zig`); `ui/` the page (HTML, `style.css`, TypeScript).
 C APIs are declared by hand in Zig (`src/app/c.zig`, the `c` struct in `src/core/vips.zig`), only
 what we call: Zig 0.16's translate-c can't read GLib's headers. Add a declaration when you need a call.
+
+Pipeline: `ui/gl/pipeline.ts` runs `ui/glsl/` for the preview, thumbnails, screenshots and export
+alike; new image maths goes there, with a test in `ui/selftest.ts`. Photos reach the page as linear
+half floats (`app://ui/photo/<rel>?edge=N`, `src/app/images.zig`).
 
 UI: colours, type and sizes are tokens on `:root` in `ui/style.css`; components are classes there
 (`.bar`, `.btn`, ...). Use them; no inline colours, no new frameworks. TypeScript is only type-stripped

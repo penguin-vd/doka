@@ -79,6 +79,8 @@ test "camera and exposure come from EXIF" {
     try testing.expectEqualStrings("E-P7", i.model);
     try testing.expect(std.mem.indexOf(u8, i.lens, "14-42mm") != null);
     try testing.expect(i.taken.len > 0 and i.exposure.len > 0);
+    try testing.expectEqualStrings("3.5", try decode.rational(arena.allocator(), "35/10"));
+    try testing.expectEqualStrings("1/250", i.exposure);
 }
 
 test "a thumbnail is a small JPEG" {

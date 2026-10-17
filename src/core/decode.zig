@@ -88,18 +88,32 @@ pub fn info(arena: std.mem.Allocator, path: [:0]const u8) !Info {
             return "";
         }
     }.get;
+    const number = struct {
+        fn get(a: std.mem.Allocator, i: *vips.Image, name: [*:0]const u8) ![]const u8 {
+            return rational(a, vips.string(i, name) orelse return "");
+        }
+    }.get;
     return .{
         .make = try field(arena, img, &.{"exif-ifd0-Make"}),
         .model = try field(arena, img, &.{"exif-ifd0-Model"}),
         .lens = try field(arena, img, &.{"exif-ifd2-LensModel"}),
         .exposure = try field(arena, img, &.{"exif-ifd2-ExposureTime"}),
-        .aperture = try field(arena, img, &.{"exif-ifd2-FNumber"}),
+        .aperture = try number(arena, img, "exif-ifd2-FNumber"),
         .iso = try field(arena, img, &.{ "exif-ifd2-ISOSpeedRatings", "exif-ifd2-PhotographicSensitivity" }),
-        .focal_length = try field(arena, img, &.{"exif-ifd2-FocalLength"}),
+        .focal_length = try number(arena, img, "exif-ifd2-FocalLength"),
         .taken = try field(arena, img, &.{ "exif-ifd2-DateTimeOriginal", "exif-ifd0-DateTime" }),
         .width = if (sideways) vips.height(img) else vips.width(img),
         .height = if (sideways) vips.width(img) else vips.height(img),
     };
+}
+
+/// EXIF's "35/10" as "3.5"; anything else as it is.
+pub fn rational(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
+    const slash = std.mem.indexOfScalar(u8, s, '/') orelse return arena.dupe(u8, s);
+    const n = std.fmt.parseFloat(f64, s[0..slash]) catch return arena.dupe(u8, s);
+    const d = std.fmt.parseFloat(f64, s[slash + 1 ..]) catch return arena.dupe(u8, s);
+    if (d == 0) return arena.dupe(u8, s);
+    return std.fmt.allocPrint(arena, "{d}", .{@round(n / d * 10) / 10});
 }
 
 /// A small upright sRGB JPEG for the folder grid, `size` pixels on its longest side.

@@ -32,3 +32,10 @@ pub fn parse(arena: std.mem.Allocator, request: []const u8) !Report {
     if (args.len != 1) return error.BadReport;
     return args[0];
 }
+
+/// One of the pipeline's tests run on the GPU (ui/selftest.ts).
+pub const TestResult = struct {
+    name: []const u8,
+    ok: bool,
+    detail: []const u8 = "",
+};

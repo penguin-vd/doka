@@ -51,6 +51,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    tests_mod.addImport("photo-core", core);
     addUi(b, tests_mod);
     // Zig runs only the root module's tests, so photo-core's are a second binary.
     const test_step = b.step("test", "Run unit tests");
@@ -79,18 +80,41 @@ fn addWebview(b: *std.Build, module: *std.Build.Module) void {
     module.linkSystemLibrary("webkit2gtk-4.1", .{});
 }
 
-// The page's files, embedded: `@embedFile("index.html")` in src/app/ui.zig. TypeScript is turned into
-// JavaScript by Node's own type stripping (scripts/strip-types.mjs), so there are no npm packages.
-const ui_files = [_][]const u8{ "index.html", "style.css" };
-const ui_scripts = [_][]const u8{"main"};
-
+// The page's files, embedded: every file under ui/, listed as `@import("ui_files")` for
+// src/app/ui.zig. TypeScript is turned into JavaScript by Node's own type stripping
+// (scripts/strip-types.mjs), so there are no npm packages; the page loads `x.js` for `x.ts`.
 fn addUi(b: *std.Build, module: *std.Build.Module) void {
-    for (ui_files) |name| module.addAnonymousImport(name, .{ .root_source_file = b.path(b.pathJoin(&.{ "ui", name })) });
-    for (ui_scripts) |name| {
-        const strip = b.addSystemCommand(&.{ "node", "--no-warnings" });
-        strip.addFileArg(b.path("scripts/strip-types.mjs"));
-        strip.addFileArg(b.path(b.fmt("ui/{s}.ts", .{name})));
-        const js = strip.addOutputFileArg(b.fmt("{s}.js", .{name}));
-        module.addAnonymousImport(b.fmt("{s}.js", .{name}), .{ .root_source_file = js });
+    var dir = b.build_root.handle.openDir(b.graph.io, "ui", .{ .iterate = true }) catch @panic("no ui/");
+    defer dir.close(b.graph.io);
+    var walker = dir.walk(b.allocator) catch @panic("OOM");
+    var paths: std.ArrayList([]const u8) = .empty;
+    while (walker.next(b.graph.io) catch @panic("walk ui/")) |entry| {
+        if (entry.kind == .file) paths.append(b.allocator, b.dupe(entry.path)) catch @panic("OOM");
     }
+    std.mem.sort([]const u8, paths.items, {}, struct {
+        fn lessThan(_: void, x: []const u8, y: []const u8) bool {
+            return std.mem.lessThan(u8, x, y);
+        }
+    }.lessThan);
+
+    const table = b.addWriteFiles();
+    const files = b.createModule(.{ .root_source_file = table.getDirectory().path(b, "ui_files.zig") });
+    var list: std.Io.Writer.Allocating = .init(b.allocator);
+    list.writer.writeAll("pub const files = .{\n") catch @panic("OOM");
+    for (paths.items) |path| {
+        const served = if (std.mem.endsWith(u8, path, ".ts")) b.fmt("{s}.js", .{path[0 .. path.len - 3]}) else path;
+        const source = b.path(b.pathJoin(&.{ "ui", path }));
+        if (std.mem.endsWith(u8, path, ".ts")) {
+            const strip = b.addSystemCommand(&.{ "node", "--no-warnings" });
+            strip.addFileArg(b.path("scripts/strip-types.mjs"));
+            strip.addFileArg(source);
+            files.addAnonymousImport(served, .{ .root_source_file = strip.addOutputFileArg(std.fs.path.basename(served)) });
+        } else {
+            files.addAnonymousImport(served, .{ .root_source_file = source });
+        }
+        list.writer.print("    .{{ \"{s}\", @embedFile(\"{s}\") }},\n", .{ served, served }) catch @panic("OOM");
+    }
+    list.writer.writeAll("};\n") catch @panic("OOM");
+    _ = table.add("ui_files.zig", list.written());
+    module.addImport("ui_files", files);
 }
