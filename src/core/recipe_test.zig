@@ -138,3 +138,18 @@ test "GPS leaves an XMP packet, written either way, and nothing else does" {
     try testing.expect(std.mem.indexOf(u8, clean, "exif:ExposureTime=\"1/200\"") != null);
     try testing.expect(std.mem.indexOf(u8, clean, "<tiff:Make>OLYMPUS</tiff:Make>") != null);
 }
+
+test "an aspect and a focus point make a crop" {
+    // A 3:2 landscape photo, 4:5 around a point right of the middle: full height, as wide as 4:5 allows.
+    const r = Recipe.fitCrop(.{ 0, 0, 1, 1 }, Recipe.aspectRatio("4:5", .{ 3000, 2000 }), .{ 0.6, 0.5 }, .{ 3000, 2000 });
+    try testing.expectApproxEqAbs(1.0, r[3], 1e-6);
+    try testing.expectApproxEqAbs(0.8 * 2000.0 / 3000.0, r[2], 1e-6);
+    try testing.expectApproxEqAbs(0.6 - r[2] / 2, r[0], 1e-6);
+    // Too near the edge: it stops at the edge.
+    const e = Recipe.fitCrop(.{ 0, 0, 1, 1 }, Recipe.aspectRatio("1:1", .{ 3000, 2000 }), .{ 0.99, 0.5 }, .{ 3000, 2000 });
+    try testing.expectApproxEqAbs(1.0, e[0] + e[2], 1e-6);
+    // Free keeps the crop's size and moves it.
+    const f = Recipe.fitCrop(.{ 0.1, 0.1, 0.5, 0.5 }, Recipe.aspectRatio("free", .{ 3, 2 }), .{ 0.5, 0.5 }, .{ 3, 2 });
+    try testing.expectEqual([4]f32{ 0.25, 0.25, 0.5, 0.5 }, f);
+    try testing.expectEqual(1.5, Recipe.aspectRatio("original", .{ 3, 2 }).?);
+}

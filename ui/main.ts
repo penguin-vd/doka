@@ -6,7 +6,7 @@ import { store, type AppState, type Photo, type Tab } from './state.js';
 import { loadSources } from './gl/gl.js';
 import { pipelineSources } from './gl/pipeline.js';
 import { checkGpu, gpuOk } from './gpu.js';
-import { selfTest } from './selftest.js';
+import { selfTest, type Starter } from './selftest.js';
 import { Viewer, fetchEarly, stageCanvas } from './viewer.js';
 import { Sidebar } from './sidebar.js';
 import { Header } from './header.js';
@@ -33,9 +33,9 @@ async function boot() {
 
   const { canvas, gl } = stageCanvas();
   const gpu = checkGpu(gl ?? undefined);
-  const { probe } = await call<{ probe: boolean }>('gpu', gpu);
+  const { probe, starters } = await call<{ probe: boolean; starters: Starter[] }>('gpu', gpu);
   if (probe) {
-    await call('selftest', gpuOk(gpu) ? selfTest() : []);
+    await call('selftest', gpuOk(gpu) ? selfTest(starters) : []);
     return;
   }
 

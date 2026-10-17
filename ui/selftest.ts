@@ -46,7 +46,9 @@ function grey(values: number[]): number[] {
   return values.flatMap((v) => [v, v, v]);
 }
 
-export function selfTest(): Result[] {
+export interface Starter { name: string; glsl: string; json: string; }
+
+export function selfTest(starters: Starter[] = []): Result[] {
   const results: Result[] = [];
   const check = (name: string, f: () => string | true) => {
     try {
@@ -126,6 +128,20 @@ export function selfTest(): Result[] {
     return [at(r, 0, 0), at(r, 0, 1)].join() === '2,5' || `got ${[at(r, 0, 0), at(r, 0, 1)]}`;
   });
 
+  check('straighten + turns the photo clockwise', () => {
+    // A white dot right of the middle goes down when the photo turns clockwise.
+    const n = 21;
+    const img: number[] = [];
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) img.push(...(x === 15 && y === 10 ? [1, 1, 1] : [0.02, 0.02, 0.02]));
+    const r = run(p, n, n, img, { crop: { straighten: 30 } });
+    let best = 0, by = -1, bx = -1;
+    for (let y = 0; y < r.h; y++) for (let x = 0; x < r.w; x++) {
+      const v = r.px[(y * r.w + x) * 4];
+      if (v > best) { best = v; by = y; bx = x; }
+    }
+    return (by > 12 && bx > 10) || `the dot went to ${bx},${by}`;
+  });
+
   check('a zoomed view shows that part of the photo', () => {
     const r = run(p, 3, 2, six, {}, [2 / 3, 0, 1 / 3, 1]);
     return [at(r, 0, 0), at(r, 0, 1)].join() === '2,5' || `got ${[at(r, 0, 0), at(r, 0, 1)]}`;
@@ -168,5 +184,20 @@ export function selfTest(): Result[] {
     return Math.abs(lattice[i] - lattice[i + 1]) < 0.01 || `red became ${lattice.slice(i, i + 3)}`;
   });
 
+  // The shaders the app comes with compile, and run on a photo without NaNs or black.
+  for (const st of starters) {
+    check(`the starter shader ${st.name} compiles and runs`, () => {
+      const json = JSON.parse(st.json);
+      const def = { name: st.name, description: json.description ?? '', params: json.params ?? [], needs: json.needs ?? [] };
+      p.setShader(st.name, p.compileShader(def, st.glsl));
+      const img: number[] = [];
+      for (let i = 0; i < 64; i++) img.push(decode(i / 63), decode(0.5), decode(1 - i / 63));
+      const { px } = run(p, 8, 8, img, { shaders: [{ name: st.name, strength: 100, params: {} }] });
+      p.setShader(st.name, null);
+      let sum = 0;
+      for (let i = 0; i < px.length; i += 4) sum += px[i] + px[i + 1] + px[i + 2];
+      return sum > 64 * 3 * 20 || `it came out black (${sum})`;
+    });
+  }
   return results;
 }

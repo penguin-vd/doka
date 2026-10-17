@@ -236,3 +236,33 @@ pub fn timestamp(buf: *[20]u8, epoch_seconds: u64) []const u8 {
         yd.year, md.month.numeric(), md.day_index + 1, ds.getHoursIntoDay(), ds.getMinutesIntoHour(), ds.getSecondsIntoMinute(),
     }) catch unreachable;
 }
+
+/// An aspect ratio's width over height in pixels of a photo `size` (rotated) big; null for free.
+pub fn aspectRatio(aspect: []const u8, size: [2]f64) ?f64 {
+    if (std.mem.eql(u8, aspect, "free")) return null;
+    if (std.mem.eql(u8, aspect, "original")) return size[0] / size[1];
+    const colon = std.mem.indexOfScalar(u8, aspect, ':') orelse return null;
+    const w = std.fmt.parseFloat(f64, aspect[0..colon]) catch return null;
+    const h = std.fmt.parseFloat(f64, aspect[colon + 1 ..]) catch return null;
+    return if (w > 0 and h > 0) w / h else null;
+}
+
+/// The biggest crop of `ratio` (null: the size `current` has) centred on `focus` (0..1 of the
+/// rotated photo) as far as the photo allows: how an aspect and a point become a crop.rect.
+pub fn fitCrop(current: [4]f32, ratio: ?f64, focus: [2]f64, size: [2]f64) [4]f32 {
+    var w: f64 = current[2];
+    var h: f64 = current[3];
+    if (ratio) |r| {
+        // In 0..1 units the width over height is the ratio times the photo's height over width.
+        const k = r * size[1] / size[0];
+        w = @min(1, k);
+        h = w / k;
+        if (h > 1) {
+            h = 1;
+            w = k;
+        }
+    }
+    const x = std.math.clamp(focus[0] - w / 2, 0, 1 - w);
+    const y = std.math.clamp(focus[1] - h / 2, 0, 1 - h);
+    return .{ @floatCast(x), @floatCast(y), @floatCast(w), @floatCast(h) };
+}

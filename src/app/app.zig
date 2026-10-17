@@ -275,7 +275,16 @@ fn dispatch(app: *App, a: std.mem.Allocator, request: []const u8, w: *Io.Writer)
     if (eql(method, "gpu")) {
         const r = try std.json.parseFromValueLeaky(gpu.Report, a, params, .{ .ignore_unknown_fields = true });
         app.onGpu(r);
-        return w.print("{{\"probe\":{}}}", .{app.probe});
+        // The probe also compiles the shaders the app comes with.
+        var s: std.json.Stringify = .{ .writer = w };
+        try s.beginObject();
+        try s.objectField("probe");
+        try s.write(app.probe);
+        try s.objectField("starters");
+        try s.beginArray();
+        if (app.probe) for (Library.starters) |st| try s.write(.{ .name = st.name, .glsl = st.glsl, .json = st.json });
+        try s.endArray();
+        return s.endObject();
     }
     if (eql(method, "selftest")) {
         app.onSelfTest(try std.json.parseFromValueLeaky([]const gpu.TestResult, a, params, .{ .ignore_unknown_fields = true }));
@@ -290,7 +299,8 @@ fn dispatch(app: *App, a: std.mem.Allocator, request: []const u8, w: *Io.Writer)
     }
     if (eql(method, "screenshot")) {
         const id: u32 = if (field(params, "id")) |v| (if (v == .integer) @intCast(v.integer) else 0) else 0;
-        app.screenshotDone(id, string(params, "data") orelse "");
+        const tones = if (field(params, "tones")) |t| (if (t == .object) try std.json.Stringify.valueAlloc(a, t, .{}) else "") else "";
+        app.screenshotDone(id, string(params, "data") orelse "", tones);
         return w.writeAll("null");
     }
     if (eql(method, "answer")) {
@@ -317,7 +327,7 @@ fn dispatch(app: *App, a: std.mem.Allocator, request: []const u8, w: *Io.Writer)
         var rels: std.ArrayList([]const u8) = .empty;
         if (field(params, "rels")) |list| if (list == .array) for (list.array.items) |r| if (r == .string) try rels.append(a, r.string);
         if (rels.items.len == 0) if (app.current) |i| try rels.append(a, f.photos[i].rel);
-        try app.exporter.start(rels.items, options, .page);
+        try app.exporter.start(rels.items, options, .page, .{});
         return w.writeAll("null");
     }
     if (eql(method, "settings")) {
@@ -427,6 +437,8 @@ fn writePhotoValue(app: *App, a: std.mem.Allocator, s: *std.json.Stringify) !voi
         try s.beginObject();
         try s.objectField("note");
         try s.write(sess.claude_note.items);
+        try s.objectField("changes");
+        try s.write(sess.claude_changes);
         try s.endObject();
     } else try s.write(null);
     try s.endObject();
@@ -553,7 +565,7 @@ pub fn requestScreenshot(app: *App, shot: tools.Screenshot) void {
     app.next_screenshot +%= 1;
     s.timer = Window.after(15_000, onScreenshotTimeout, @ptrFromInt(@as(usize, s.id)));
     app.screenshots.append(app.gpa, s) catch {
-        tools.finishScreenshot(app, s, "");
+        tools.finishScreenshot(app, s, "", "");
         return;
     };
     screenshot_owner = app;
@@ -571,15 +583,15 @@ fn onScreenshotTimeout(ctx: ?*anyopaque) callconv(.c) c_int {
         s.timer = 0;
     };
     log.warn("the page didn't draw a screenshot in time", .{});
-    app.screenshotDone(id, "");
+    app.screenshotDone(id, "", "");
     return 0;
 }
 
-fn screenshotDone(app: *App, id: u32, jpeg_base64: []const u8) void {
+fn screenshotDone(app: *App, id: u32, jpeg_base64: []const u8, tones: []const u8) void {
     for (app.screenshots.items, 0..) |s, i| if (s.id == id) {
         _ = app.screenshots.swapRemove(i);
         if (s.timer != 0) Window.cancel(s.timer);
-        tools.finishScreenshot(app, s, jpeg_base64);
+        tools.finishScreenshot(app, s, jpeg_base64, tones);
         return;
     };
 }
@@ -592,6 +604,7 @@ pub fn exportForClaude(app: *App, call: *Mcp.Call, args: std.json.Value) !void {
     defer arena.deinit();
     const a = arena.allocator();
     var rels: std.ArrayList([]const u8) = .empty;
+    var extras: Exporter.Extras = .{};
     if (args == .object) {
         if (args.object.get("names")) |names| if (names == .array) for (names.array.items) |n| {
             if (n != .string) continue;
@@ -609,11 +622,26 @@ pub fn exportForClaude(app: *App, call: *Mcp.Call, args: std.json.Value) !void {
         if (args.object.get("gps")) |v| if (v == .bool) {
             options.keep_gps = v.bool;
         };
+        if (args.object.get("folder")) |v| if (v == .string) {
+            if (!std.fs.path.isAbsolute(v.string)) return error.FolderNotAbsolute;
+            options.folder = v.string;
+        };
+        if (args.object.get("name")) |v| if (v == .string) {
+            extras.name = v.string;
+            // A name of its own needs no "-edit".
+            options.suffix = "";
+        };
+        if (args.object.get("aspect") != null or args.object.get("focus") != null) {
+            var crop: std.json.ObjectMap = .empty;
+            if (args.object.get("aspect")) |v| try crop.put(a, "aspect", v);
+            if (args.object.get("focus")) |v| try crop.put(a, "focus", v);
+            extras.crop = .{ .object = crop };
+        }
     }
     if (rels.items.len == 0) rels.append(a, f.photos[app.current orelse return error.NoPhoto].rel) catch {};
     // Exports always keep the camera, lens and date (SPEC.md).
     options.keep_metadata = true;
-    try app.exporter.start(rels.items, options, .{ .claude = call });
+    try app.exporter.start(rels.items, options, .{ .claude = call }, extras);
 }
 
 // Asking the page and waiting for its answer: compiling a shader, baking a look.

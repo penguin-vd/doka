@@ -11,6 +11,8 @@ const Window = @import("window.zig");
 const Pool = @import("jobs.zig");
 const Settings = @import("settings.zig");
 const Mcp = @import("mcp.zig");
+const tools = @import("tools.zig");
+const Recipe = core.Recipe;
 
 const Exporter = @This();
 
@@ -22,6 +24,14 @@ const max_pixels = 100_000_000;
 app: *App,
 batch: ?Batch = null,
 next_id: u32 = 1,
+
+/// Claude's extras for one export: a file name, a crop that isn't kept in the recipe.
+pub const Extras = struct {
+    // Instead of the photo's own name; with several photos, before each one's name.
+    name: []const u8 = "",
+    // A crop.aspect / crop.focus patch, fitted per photo (tools.fitCropPatch).
+    crop: ?std.json.Value = null,
+};
 
 pub const Report = union(enum) {
     claude: *Mcp.Call,
@@ -45,6 +55,7 @@ const Batch = struct {
     results: std.ArrayList(Result) = .empty,
     job: ?*Job = null,
     started: i96 = 0,
+    extras: Extras = .{},
 };
 
 const Job = struct {
@@ -63,7 +74,7 @@ pub fn busy(e: *const Exporter) bool {
 }
 
 /// Starts exporting `rels`; `report` hears when all are written.
-pub fn start(e: *Exporter, rels: []const []const u8, options: Settings.Export, report: Report) !void {
+pub fn start(e: *Exporter, rels: []const []const u8, options: Settings.Export, report: Report, extras: Extras) !void {
     if (e.batch != null) return error.ExportBusy;
     if (rels.len == 0) return error.NothingToExport;
     var arena: std.heap.ArenaAllocator = .init(e.app.gpa);
@@ -76,7 +87,9 @@ pub fn start(e: *Exporter, rels: []const []const u8, options: Settings.Export, r
     copy.suffix = try a.dupe(u8, options.suffix);
     const owned = try a.alloc([]const u8, rels.len);
     for (rels, owned) |r, *o| o.* = try a.dupe(u8, r);
-    e.batch = .{ .arena = arena, .rels = owned, .options = copy, .folder = folder, .report = report, .started = Io.Timestamp.now(e.app.io, .awake).nanoseconds };
+    var kept: Extras = .{ .name = try a.dupe(u8, extras.name) };
+    if (extras.crop) |c| kept.crop = try std.json.parseFromSliceLeaky(std.json.Value, a, try std.json.Stringify.valueAlloc(a, c, .{}), .{});
+    e.batch = .{ .arena = arena, .rels = owned, .options = copy, .folder = folder, .report = report, .started = Io.Timestamp.now(e.app.io, .awake).nanoseconds, .extras = kept };
     e.next();
 }
 
@@ -92,9 +105,20 @@ fn next(e: *Exporter) void {
     job.* = .{ .id = e.next_id, .rel = rel, .started = Io.Timestamp.now(e.app.io, .awake).nanoseconds };
     e.next_id +%= 1;
     b.job = job;
+    var recipe_json: []const u8 = s.json;
+    if (b.extras.crop) |crop| {
+        // This export's own crop; the photo's recipe stays as it is.
+        const r = s.recipe(a) catch return e.fail("its recipe didn't load");
+        var patch = crop.object.clone(a) catch return e.fail("out of memory");
+        tools.fitCropPatch(e.app, a, i, r.crop, &patch) catch return e.fail("that crop doesn't fit");
+        var wrapper: std.json.ObjectMap = .empty;
+        wrapper.put(a, "crop", .{ .object = patch }) catch return e.fail("out of memory");
+        const cropped = Recipe.apply(a, r, .{ .object = wrapper }) catch return e.fail("that crop doesn't fit");
+        recipe_json = cropped.writeAlloc(a) catch return e.fail("out of memory");
+    }
     var out: Io.Writer.Allocating = .init(a);
     out.writer.print("{{\"id\":{d},\"rel\":{f},\"bits\":{d},\"p3\":{},\"index\":{d},\"total\":{d},\"recipe\":{s}}}", .{
-        job.id, std.json.fmt(rel, .{}), b.options.format.bits(), b.options.space == .p3, b.index, b.rels.len, s.json,
+        job.id, std.json.fmt(rel, .{}), b.options.format.bits(), b.options.space == .p3, b.index, b.rels.len, recipe_json,
     }) catch return e.fail("out of memory");
     e.app.emit("export", out.written());
 }
@@ -211,7 +235,7 @@ fn serve(e: *Exporter, request: *Window.Request, rest: []const u8) !void {
             .io = e.app.io,
             .gpa = gpa,
             .source = try std.fmt.allocPrintSentinel(gpa, "{s}/{s}", .{ e.app.folder.?.path, job.rel }, 0),
-            .out = try outputPath(gpa, e.app.io, b.folder, job.rel, b.options.suffix, b.options.format.extension()),
+            .out = try outputPath(gpa, e.app.io, b.folder, try stemFor(b.arena.allocator(), job.rel, b.extras.name, b.rels.len), b.options.suffix, b.options.format.extension()),
             .options = .{
                 .format = b.options.format,
                 .quality = b.options.quality,
@@ -232,10 +256,21 @@ fn serve(e: *Exporter, request: *Window.Request, rest: []const u8) !void {
     return error.BadRequest;
 }
 
+/// The exported file's name: the photo's, or the one asked for (before each photo's own when several).
+pub fn stemFor(a: std.mem.Allocator, rel: []const u8, name: []const u8, count: usize) ![]const u8 {
+    const own = withoutExtension(std.fs.path.basename(rel));
+    if (name.len == 0) return own;
+    const asked = withoutExtension(std.fs.path.basename(name));
+    if (count == 1) return asked;
+    return std.fmt.allocPrint(a, "{s}-{s}", .{ asked, own });
+}
+
+fn withoutExtension(name: []const u8) []const u8 {
+    return name[0 .. std.mem.lastIndexOfScalar(u8, name, '.') orelse name.len];
+}
+
 /// `<folder>/<name><suffix><ext>`, with -2, -3… when that's taken: an export never overwrites.
-pub fn outputPath(gpa: std.mem.Allocator, io: Io, folder: []const u8, rel: []const u8, suffix: []const u8, ext: []const u8) ![:0]u8 {
-    const base = std.fs.path.basename(rel);
-    const stem = base[0 .. std.mem.lastIndexOfScalar(u8, base, '.') orelse base.len];
+pub fn outputPath(gpa: std.mem.Allocator, io: Io, folder: []const u8, stem: []const u8, suffix: []const u8, ext: []const u8) ![:0]u8 {
     var n: u32 = 1;
     while (n < 10_000) : (n += 1) {
         const path = if (n == 1)

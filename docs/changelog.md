@@ -40,6 +40,12 @@ Changed for what someone would notice, a line under Decided for a choice whose r
   behind thumbnails; long folders scroll smoothly (only changed thumbnails are touched, ones off
   screen aren't painted, the newest thumbnails are made first).
 - The footer's "Metadata kept" and the sidebar's hint are gone (the hint is in the thumbnails' tooltip).
+- For Claude: set_edits and undo take the `photo` they mean (refused if another is open); a crop
+  by `aspect` and `focus`; export to a `folder` under a `name`, with a crop for that export only;
+  list_photos `edited_only`; get_view measures clipping, mean and a histogram; the Keep / Undo bar
+  says how many changes Claude made and the last one.
+- Straighten turns clockwise for + (as Lightroom), the other way round from before.
+- Starter shaders bloom, light-leak, clarity and dehaze; each lands in the shaders folder once.
 - `doka --shot out.png [--eval js]` draws the app off the screen and saves a picture: how Claude
   looks at it without taking over the desktop. `zig build probe` runs the pipeline's tests on the GPU.
 
@@ -87,5 +93,6 @@ Changed for what someone would notice, a line under Decided for a choice whose r
 - libvips' operation cache is off: it kept decoded photos alive; nothing here asks twice.
 - Zoom and before/after happen in the finish pass (a window onto the output, a scissor for the
   original), so grain, vignette and halation stay true to the whole photo at any zoom.
+- Clarity and dehaze are starter shaders, not sliders: no new core maths, and Claude can tune them.
 - Styling is one `ui/style.css`: the design's colours, type and sizes as tokens on `:root`, and a
   few component classes (`.bar`, `.btn`, `.status`). No Tailwind: it needs a build or a CDN.

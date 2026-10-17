@@ -17,8 +17,9 @@ gesture: u64 = 0,
 // The recipe before Claude's change, and what Claude said it changed, until Keep or Undo.
 claude_base: ?[]u8 = null,
 claude_note: std.ArrayList(u8) = .empty,
-// The undo stack's depth when Claude's change began.
+// The undo stack's depth when Claude's change began, and how many changes since.
 claude_depth: usize = 0,
+claude_changes: u32 = 0,
 
 pub fn init(gpa: std.mem.Allocator, start: Recipe) !Session {
     return .{ .gpa = gpa, .json = try start.writeAlloc(gpa) };
@@ -63,9 +64,12 @@ pub fn change(s: *Session, arena: std.mem.Allocator, ch: Change) !Recipe {
         if (s.claude_base == null) {
             s.claude_base = try s.gpa.dupe(u8, s.json);
             s.claude_depth = s.undo_stack.items.len;
+            s.claude_changes = 0;
         }
+        s.claude_changes += 1;
+        // The bar says what Claude did last, and how many changes Undo would take back.
         if (ch.note.len > 0) {
-            if (s.claude_note.items.len > 0) try s.claude_note.appendSlice(s.gpa, "; ");
+            s.claude_note.clearRetainingCapacity();
             try s.claude_note.appendSlice(s.gpa, ch.note);
         }
     }

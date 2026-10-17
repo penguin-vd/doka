@@ -34,10 +34,10 @@ pub const instructions =
 pub const definitions =
     \\[
     \\{"name":"get_view","title":"See the open photo",
-    \\ "description":"What the user sees now: the folder, the open photo (name, camera, lens, exposure), the active tab, the photo's current edits (only values that differ from the default), any change of yours awaiting Keep/Undo, and a screenshot of the rendered photo.",
+    \\ "description":"What the user sees now: the folder, the open photo (name, camera, lens, exposure), the active tab, the photo's current edits (only values that differ from the default), any change of yours awaiting Keep/Undo, a screenshot of the rendered photo, and its tones measured at full screenshot size: % of clipped highlights (any channel at 255, and per channel), % of crushed shadows, mean brightness and a 16-bin histogram.",
     \\ "inputSchema":{"type":"object","properties":{}}},
     \\{"name":"set_edits","title":"Edit the open photo",
-    \\ "description":"Changes the open photo's edits, live. Give only the fields to change; everything else stays. Set a field to its default (0, or look name 'none') to remove it. Returns the new view with a screenshot. Ranges: exposure -5..5 (stops); temperature, tint, contrast, highlights, shadows, saturation -100..100; look.strength, halation, vignette, grain.amount, grain.size, detail.sharpen, detail.noise 0..100; colour bands (reds, oranges, yellows, greens, blues, purples) hue/sat/light -100..100; crop.rect [x,y,w,h] 0..1 of the rotated photo, crop.rotate 0/90/180/270, crop.straighten -45..45 degrees, crop.aspect original|free|1:1|4:5|3:2|16:9. shaders replaces the whole list: [{name, strength 0..100, enabled, params:{name:value}}].",
+    \\ "description":"Changes the open photo's edits, live. Give only the fields to change; everything else stays. Set a field to its default (0, or look name 'none') to remove it. Give `photo` (the name get_view shows) and nothing changes if another photo is open by now. Returns the new view with a screenshot. Ranges: exposure -5..5 (stops); temperature, tint, contrast, highlights, shadows, saturation -100..100; look.strength, halation, vignette, grain.amount, grain.size, detail.sharpen, detail.noise 0..100; colour bands (reds, oranges, yellows, greens, blues, purples) hue/sat/light -100..100; crop.rect [x,y,w,h] 0..1 of the rotated photo, crop.rotate 0/90/180/270 (clockwise), crop.straighten -45..45 degrees (+ turns the photo clockwise, - counter-clockwise), crop.aspect original|free|1:1|4:5|3:2|16:9 (literal: 4:5 is portrait). Give crop.aspect and/or crop.focus [x,y] (0..1, the point to keep in the middle) without a rect and the app fits the biggest crop of that aspect around it. shaders replaces the whole list: [{name, strength 0..100, enabled, params:{name:value}}].",
     \\ "inputSchema":{"type":"object","properties":{
     \\  "edits":{"type":"object","properties":{"exposure":{"type":"number","minimum":-5,"maximum":5},"temperature":{"type":"number","minimum":-100,"maximum":100},"tint":{"type":"number","minimum":-100,"maximum":100},"contrast":{"type":"number","minimum":-100,"maximum":100},"highlights":{"type":"number","minimum":-100,"maximum":100},"shadows":{"type":"number","minimum":-100,"maximum":100},"saturation":{"type":"number","minimum":-100,"maximum":100}}},
     \\  "look":{"type":"object","properties":{"name":{"type":"string","description":"A .cube file from list_looks, or 'none'"},"strength":{"type":"number","minimum":0,"maximum":100}}},
@@ -47,20 +47,21 @@ pub const definitions =
     \\  "vignette":{"type":"number","minimum":0,"maximum":100},
     \\  "grain":{"type":"object","properties":{"amount":{"type":"number","minimum":0,"maximum":100},"size":{"type":"number","minimum":0,"maximum":100}}},
     \\  "detail":{"type":"object","properties":{"sharpen":{"type":"number","minimum":0,"maximum":100},"noise":{"type":"number","minimum":0,"maximum":100}}},
-    \\  "crop":{"type":"object","properties":{"aspect":{"type":"string"},"straighten":{"type":"number"},"rotate":{"type":"number"},"flip":{"type":"boolean"},"rect":{"type":"array","items":{"type":"number"},"minItems":4,"maxItems":4}}},
-    \\  "note":{"type":"string","description":"What you changed, in a few words, shown to the user beside Keep / Undo"}}}},
+    \\  "crop":{"type":"object","properties":{"aspect":{"type":"string"},"focus":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2},"straighten":{"type":"number"},"rotate":{"type":"number"},"flip":{"type":"boolean"},"rect":{"type":"array","items":{"type":"number"},"minItems":4,"maxItems":4}}},
+    \\  "note":{"type":"string","description":"What you changed, in a few words, shown to the user beside Keep / Undo"},
+    \\  "photo":{"type":"string","description":"The photo you mean to edit; refused if another one is open"}}}},
     \\{"name":"open_photo","title":"Open another photo",
     \\ "description":"Opens a photo of the folder by name (its path in the folder, or just the file name), or the next or previous one. Returns the new view.",
     \\ "inputSchema":{"type":"object","properties":{"name":{"type":"string"},"direction":{"type":"string","enum":["next","previous"]}}}},
     \\{"name":"list_photos","title":"List the folder's photos",
-    \\ "description":"The open folder's photos, in order, each with whether it has edits.",
-    \\ "inputSchema":{"type":"object","properties":{}}},
+    \\ "description":"The open folder's photos, in order, each with whether it has edits (and for edited ones, whether the user or Claude changed it last, and when).",
+    \\ "inputSchema":{"type":"object","properties":{"edited_only":{"type":"boolean","description":"Only the photos with edits"}}}},
     \\{"name":"undo","title":"Undo the last change",
-    \\ "description":"Undoes the last change to the open photo, whoever made it. Returns the new view.",
-    \\ "inputSchema":{"type":"object","properties":{}}},
+    \\ "description":"Undoes the last change to the open photo, one step, whoever made it. (The user's Undo on the Keep / Undo bar takes back all of your changes since their last Keep at once.) Returns the new view.",
+    \\ "inputSchema":{"type":"object","properties":{"photo":{"type":"string","description":"The photo you mean; refused if another one is open"}}}},
     \\{"name":"export","title":"Export photos",
-    \\ "description":"Exports the open photo, or the named ones, with their edits, to the export folder (camera, lens, exposure and date always kept). Options default to the app's export settings.",
-    \\ "inputSchema":{"type":"object","properties":{"names":{"type":"array","items":{"type":"string"}},"format":{"type":"string","enum":["jpeg","png"]},"quality":{"type":"number","minimum":50,"maximum":100},"long_edge":{"type":"number","description":"Longest side in pixels; 0 = original size"},"gps":{"type":"boolean","description":"Keep the GPS location (default: the app's setting)"}}}},
+    \\ "description":"Exports the open photo, or the named ones, with their edits (camera, lens, exposure and date always kept). Options default to the app's export settings; the folder defaults to ~/Pictures/Doka. An export never overwrites a file: -2, -3… is added. aspect (with focus) crops this export only; the recipe stays as it is.",
+    \\ "inputSchema":{"type":"object","properties":{"names":{"type":"array","items":{"type":"string"}},"folder":{"type":"string","description":"Absolute path; created if missing"},"name":{"type":"string","description":"File name without extension; with several photos, put before each photo's own name"},"aspect":{"type":"string","description":"1:1, 4:5, 3:2, 16:9 or original: a crop for this export only"},"focus":{"type":"array","items":{"type":"number"},"description":"[x, y] 0..1 to centre that crop on"},"format":{"type":"string","enum":["jpeg","png"]},"quality":{"type":"number","minimum":50,"maximum":100},"long_edge":{"type":"number","description":"Longest side in pixels; 0 = original size"},"gps":{"type":"boolean","description":"Keep the GPS location (default: the app's setting)"}}}},
     \\{"name":"list_looks","title":"List looks",
     \\ "description":"The installed looks: .cube LUTs in the looks folder, by file name (use it as look.name in set_edits) and title.",
     \\ "inputSchema":{"type":"object","properties":{}}},
@@ -112,6 +113,7 @@ fn explain(err: anyerror) []const u8 {
         error.NoSuchShader, error.FileNotFound => "no such shader (see list_shaders)",
         error.ExportBusy => "an export is already running",
         error.BadArguments => "missing or wrong arguments (see the tool's description)",
+        error.FolderNotAbsolute => "the export folder must be an absolute path",
         else => @errorName(err),
     };
 }
@@ -119,14 +121,20 @@ fn explain(err: anyerror) []const u8 {
 fn dispatch(app: *App, a: std.mem.Allocator, call: *Mcp.Call, args: std.json.Value) !void {
     const name = call.name;
     if (eql(name, "get_view")) return view(app, a, call, null);
-    if (eql(name, "list_photos")) return listPhotos(app, a, call);
+    if (eql(name, "list_photos")) return listPhotos(app, a, call, if (args == .object) if (args.object.get("edited_only")) |v| v == .bool and v.bool else false else false);
     if (eql(name, "set_edits")) {
         const s = try app.currentSession();
         if (args != .object) return error.BadArguments;
+        if (!try samePhoto(app, a, call, args)) return;
         var patch = try args.object.clone(a);
+        _ = patch.orderedRemove("photo");
         var note: []const u8 = "";
         if (patch.fetchOrderedRemove("note")) |n| if (n.value == .string) {
             note = n.value.string;
+        };
+        if (patch.getPtr("crop")) |crop| if (crop.* == .object) {
+            const r = try s.recipe(a);
+            try fitCropPatch(app, a, app.current.?, r.crop, &crop.object);
         };
         var it = patch.iterator();
         while (it.next()) |e| if (!isRecipeField(e.key_ptr.*)) return error.UnknownField;
@@ -151,6 +159,7 @@ fn dispatch(app: *App, a: std.mem.Allocator, call: *Mcp.Call, args: std.json.Val
     }
     if (eql(name, "undo")) {
         const s = try app.currentSession();
+        if (!try samePhoto(app, a, call, args)) return;
         if (!try s.undo()) return call.finish(try Mcp.textResult(app.gpa, "Nothing to undo.", false));
         app.changed();
         app.emitPhoto();
@@ -210,6 +219,50 @@ pub fn validate(comptime T: type, v: std.json.Value) !void {
     }
 }
 
+/// With `photo` given, the open photo must be that one: the user may have moved on meanwhile.
+fn samePhoto(app: *App, a: std.mem.Allocator, call: *Mcp.Call, args: std.json.Value) !bool {
+    const want = string(args, "photo") orelse return true;
+    const f = &(app.folder orelse return error.NoFolder);
+    const open = f.photos[app.current orelse return error.NoPhoto].rel;
+    if (std.ascii.eqlIgnoreCase(open, want) or std.ascii.eqlIgnoreCase(std.fs.path.basename(open), want)) return true;
+    const text = try std.fmt.allocPrint(a, "Nothing changed: the open photo is {s}, not {s}. The user may have switched photos; open_photo it first, or ask.", .{ open, want });
+    call.finish(try Mcp.textResult(app.gpa, text, true));
+    return false;
+}
+
+/// A crop patch with an `aspect` or a `focus` but no `rect` gets the rect worked out: the biggest
+/// crop of that aspect around the focus (or the current crop's middle). `focus` isn't kept.
+pub fn fitCropPatch(app: *App, a: std.mem.Allocator, index: usize, current: Recipe.Crop, crop: *std.json.ObjectMap) !void {
+    const focus_value = crop.fetchOrderedRemove("focus");
+    if (crop.get("rect") != null) return;
+    const aspect_value = crop.get("aspect");
+    if (focus_value == null and aspect_value == null) return;
+    const aspect = if (aspect_value) |v| (if (v == .string) v.string else return error.BadArguments) else current.aspect;
+    const rotate: u16 = if (crop.get("rotate")) |v| switch (v) {
+        .integer => |i| @intCast(@mod(i, 360)),
+        else => current.rotate,
+    } else current.rotate;
+    const f = &(app.folder orelse return error.NoFolder);
+    const path = try std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ f.path, f.photos[index].rel }, 0);
+    const info = try core.decode.info(a, path);
+    const turned = (rotate / 90) % 2 == 1;
+    const size: [2]f64 = .{ @floatFromInt(if (turned) info.height else info.width), @floatFromInt(if (turned) info.width else info.height) };
+    const c = current.rect;
+    var focus: [2]f64 = .{ c[0] + c[2] / 2, c[1] + c[3] / 2 };
+    if (focus_value) |fv| {
+        if (fv.value != .array or fv.value.array.items.len != 2) return error.BadArguments;
+        for (fv.value.array.items, 0..) |v, i| focus[i] = switch (v) {
+            .integer => |n| @floatFromInt(n),
+            .float => |x| x,
+            else => return error.BadArguments,
+        };
+    }
+    const rect = Recipe.fitCrop(c, Recipe.aspectRatio(aspect, size), focus, size);
+    var list = std.json.Array.init(a);
+    for (rect) |v| try list.append(.{ .float = v });
+    try crop.put(a, "rect", .{ .array = list });
+}
+
 /// A photo by its path in the folder, or by file name when that's unique.
 pub fn find(f: *const App.Folder, name: []const u8) !usize {
     if (f.index(name)) |i| return i;
@@ -247,7 +300,7 @@ fn summarizeInto(a: std.mem.Allocator, out: *std.ArrayList(u8), prefix: []const 
     }
 }
 
-fn listPhotos(app: *App, a: std.mem.Allocator, call: *Mcp.Call) !void {
+fn listPhotos(app: *App, a: std.mem.Allocator, call: *Mcp.Call, edited_only: bool) !void {
     const f = &(app.folder orelse return error.NoFolder);
     var out: Io.Writer.Allocating = .init(a);
     var s: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .indent_1 } };
@@ -259,11 +312,18 @@ fn listPhotos(app: *App, a: std.mem.Allocator, call: *Mcp.Call) !void {
     try s.objectField("photos");
     try s.beginArray();
     for (f.photos) |p| {
+        if (edited_only and !p.edited) continue;
         try s.beginObject();
         try s.objectField("name");
         try s.write(p.rel);
         try s.objectField("edited");
         try s.write(p.edited);
+        if (p.edited) if (core.store.load(app.io, a, f.dir, p.rel) catch null) |r| {
+            try s.objectField("updatedBy");
+            try s.write(r.updatedBy);
+            try s.objectField("updatedAt");
+            try s.write(r.updatedAt);
+        };
         try s.endObject();
     }
     try s.endArray();
@@ -334,12 +394,18 @@ pub const Screenshot = struct {
 };
 
 /// The page's screenshot (base64 JPEG, or empty when it couldn't draw): the call's answer.
-pub fn finishScreenshot(app: *App, shot: Screenshot, jpeg_base64: []const u8) void {
+pub fn finishScreenshot(app: *App, shot: Screenshot, jpeg_base64: []const u8, tones: []const u8) void {
     defer app.gpa.free(shot.text);
-    const result = if (jpeg_base64.len > 0)
-        std.fmt.allocPrint(app.gpa, "{{\"content\":[{{\"type\":\"text\",\"text\":{f}}},{{\"type\":\"image\",\"data\":\"{s}\",\"mimeType\":\"image/jpeg\"}}],\"isError\":false}}", .{ std.json.fmt(shot.text, .{}), jpeg_base64 })
+    // The rendered photo's numbers after the view: clipping, mean, histogram (ui/snapshot.ts).
+    const text = if (tones.len > 0)
+        std.fmt.allocPrint(app.gpa, "{s}\nTones of the rendered photo (% of pixels; histogram darkest first, 16 bins): {s}", .{ shot.text, tones }) catch return
     else
-        Mcp.textResult(app.gpa, shot.text, false);
+        app.gpa.dupe(u8, shot.text) catch return;
+    defer app.gpa.free(text);
+    const result = if (jpeg_base64.len > 0)
+        std.fmt.allocPrint(app.gpa, "{{\"content\":[{{\"type\":\"text\",\"text\":{f}}},{{\"type\":\"image\",\"data\":\"{s}\",\"mimeType\":\"image/jpeg\"}}],\"isError\":false}}", .{ std.json.fmt(text, .{}), jpeg_base64 })
+    else
+        Mcp.textResult(app.gpa, text, false);
     shot.call.finish(result catch return log.err("out of memory", .{}));
 }
 

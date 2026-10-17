@@ -6,7 +6,7 @@ uniform float u_halation;  // 0..1
 uniform vec4 u_rect;       // crop x, y, w, h in the rotated photo, 0..1
 uniform int u_turns;       // quarter turns clockwise
 uniform bool u_flip;
-uniform float u_angle;     // straighten, radians
+uniform float u_angle;     // straighten, radians: + turns the photo clockwise (as Lightroom)
 uniform vec2 u_size;       // the rotated photo's size, pixels at any scale
 uniform float u_vignette;  // 0..1
 uniform float u_grain;     // 0..1
@@ -23,7 +23,8 @@ vec2 source(vec2 uv) {
   vec2 q = (p - 0.5) * u_size;
   float s = abs(sin(u_angle)), c = cos(u_angle);
   float fit = min(u_size.x / (u_size.x * c + u_size.y * s), u_size.y / (u_size.x * s + u_size.y * c));
-  q = mat2(c, sin(u_angle), -sin(u_angle), c) * (q * fit);
+  // The sample point turns the other way to the photo (y runs down).
+  q = mat2(c, -sin(u_angle), sin(u_angle), c) * (q * fit);
   p = q / u_size + 0.5;
   if (u_flip) p.x = 1.0 - p.x;
   if (u_turns == 1) return vec2(p.y, 1.0 - p.x);

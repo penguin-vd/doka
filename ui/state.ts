@@ -79,7 +79,7 @@ export interface Photo {
   recipe: Recipe;
   canUndo: boolean;
   canRedo: boolean;
-  claude: { note: string } | null;
+  claude: { note: string; changes: number } | null;
 }
 
 export interface FolderState { name: string; path: string; photos: { rel: string; edited: boolean }[]; }

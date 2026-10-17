@@ -32,15 +32,46 @@ pub fn init(gpa: std.mem.Allocator, io: Io, config_dir: []const u8) !Library {
     const looks = try std.fs.path.joinZ(gpa, &.{ config_dir, "looks" });
     const shaders = try std.fs.path.joinZ(gpa, &.{ config_dir, "shaders" });
     Io.Dir.cwd().createDirPath(io, looks) catch |err| log.warn("can't create {s}: {t}", .{ looks, err });
-    const lib: Library = .{ .gpa = gpa, .io = io, .looks_dir = looks, .shaders_dir = shaders };
-    // A first shaders folder starts with the spec's example, so the list isn't empty.
-    if (Io.Dir.cwd().access(io, shaders, .{})) |_| {} else |_| {
-        Io.Dir.cwd().createDirPath(io, shaders) catch |err| log.warn("can't create {s}: {t}", .{ shaders, err });
-        var scratch: std.heap.ArenaAllocator = .init(gpa);
-        defer scratch.deinit();
-        @constCast(&lib).saveShader(scratch.allocator(), "split-tone", @embedFile("starter/split-tone.glsl"), @embedFile("starter/split-tone.json"), 0) catch |err| log.warn("starter shader: {t}", .{err});
-    }
+    Io.Dir.cwd().createDirPath(io, shaders) catch |err| log.warn("can't create {s}: {t}", .{ shaders, err });
+    var lib: Library = .{ .gpa = gpa, .io = io, .looks_dir = looks, .shaders_dir = shaders };
+    lib.seedStarters();
     return lib;
+}
+
+/// The shaders the app comes with (src/app/starter/).
+pub const starters = [_]struct { name: []const u8, glsl: []const u8, json: []const u8 }{
+    .{ .name = "split-tone", .glsl = @embedFile("starter/split-tone.glsl"), .json = @embedFile("starter/split-tone.json") },
+    .{ .name = "bloom", .glsl = @embedFile("starter/bloom.glsl"), .json = @embedFile("starter/bloom.json") },
+    .{ .name = "light-leak", .glsl = @embedFile("starter/light-leak.glsl"), .json = @embedFile("starter/light-leak.json") },
+    .{ .name = "clarity", .glsl = @embedFile("starter/clarity.glsl"), .json = @embedFile("starter/clarity.json") },
+    .{ .name = "dehaze", .glsl = @embedFile("starter/dehaze.glsl"), .json = @embedFile("starter/dehaze.json") },
+};
+
+// Which starters the folder has had, so one deleted stays deleted.
+const seeded_file = ".starters";
+
+// Each starter goes into the shaders folder once.
+fn seedStarters(lib: *Library) void {
+    var scratch: std.heap.ArenaAllocator = .init(lib.gpa);
+    defer scratch.deinit();
+    const a = scratch.allocator();
+    var dir = Io.Dir.cwd().openDir(lib.io, lib.shaders_dir, .{}) catch return;
+    defer dir.close(lib.io);
+    const had = dir.readFileAlloc(lib.io, seeded_file, a, .limited(4096)) catch "";
+    var list: std.ArrayList(u8) = .empty;
+    list.appendSlice(a, had) catch return;
+    for (starters) |st| {
+        var lines = std.mem.tokenizeScalar(u8, had, '\n');
+        const seen = while (lines.next()) |l| {
+            if (std.mem.eql(u8, l, st.name)) break true;
+        } else false;
+        if (seen) continue;
+        if (dir.access(lib.io, st.name, .{})) |_| {} else |_| {
+            lib.saveShader(a, st.name, st.glsl, st.json, 0) catch |err| log.warn("starter shader {s}: {t}", .{ st.name, err });
+        }
+        list.print(a, "{s}\n", .{st.name}) catch return;
+    }
+    dir.writeFile(lib.io, .{ .sub_path = seeded_file, .data = list.items }) catch {};
 }
 
 pub fn deinit(lib: *Library) void {

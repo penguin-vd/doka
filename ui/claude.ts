@@ -28,7 +28,9 @@ export class ClaudeBar {
   private update() {
     const c = store.photo?.claude;
     this.el.classList.toggle('hidden', !c);
-    if (c) this.text.textContent = c.note ? `Claude changed this photo: ${c.note}` : 'Claude changed this photo.';
+    if (!c) return;
+    const what = c.changes > 1 ? `Claude made ${c.changes} changes to this photo` : 'Claude changed this photo';
+    this.text.textContent = c.note ? `${what}. Last: ${c.note}` : `${what}.`;
   }
 }
 
@@ -41,17 +43,18 @@ export function listenToClaude(viewer: Viewer, header: Header, library: Library,
   });
   on('screenshot', async ({ id, edge }: { id: number; edge: number }) => {
     let data = '';
+    let measured = null;
     try {
       const p = store.photo;
       if (p) {
         await viewer.load(p.rel, previewEdge);
         await library.settled();
         await library.prepare(viewer.pipeline, store.recipe);
-        data = snapshotJpeg(viewer.pipeline, store.recipe, edge);
+        ({ data, tones: measured } = snapshotJpeg(viewer.pipeline, store.recipe, edge));
       }
     } catch (e) {
       report(e);
     }
-    await call('screenshot', { id, data });
+    await call('screenshot', { id, data, tones: measured });
   });
 }

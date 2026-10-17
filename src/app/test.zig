@@ -91,7 +91,8 @@ test "Claude's changes undo together from the bar, and Keep clears the bar" {
     _ = try s.change(a, .{ .patch = try patch(a, "{\"look\":{\"name\":\"film.cube\",\"strength\":70}}"), .by = .claude, .now = 1, .note = "film look 70%" });
     const r = try s.change(a, .{ .patch = try patch(a, "{\"grain\":{\"amount\":25}}"), .by = .claude, .now = 2, .note = "grain 25" });
     try testing.expectEqual(.claude, r.updatedBy);
-    try testing.expectEqualStrings("film look 70%; grain 25", s.claude_note.items);
+    try testing.expectEqualStrings("grain 25", s.claude_note.items);
+    try testing.expectEqual(2, s.claude_changes);
     try testing.expect(try s.undoClaude());
     const back = try s.recipe(a);
     try testing.expectEqual(0.3, back.edits.exposure);
@@ -203,10 +204,10 @@ test "a shader saved twice keeps the old version, and only the newest five" {
     };
     try testing.expectEqual(Library.versions_kept, n);
     try lib.deleteShader("tone");
-    // A new shaders folder starts with the spec's example.
+    // A new shaders folder starts with the app's own; "tone" is gone.
     const left = try lib.shaderNames(a);
-    try testing.expectEqual(1, left.len);
-    try testing.expectEqualStrings("split-tone", left[0]);
+    try testing.expectEqual(Library.starters.len, left.len);
+    for (left) |name| try testing.expect(!std.mem.eql(u8, name, "tone"));
 }
 
 const Exporter = @import("exporter.zig");
@@ -219,11 +220,11 @@ test "an export never takes a name that's already there" {
     const cwd = std.mem.sliceTo(std.c.getcwd(&cwd_buf, cwd_buf.len).?, 0);
     const folder = try std.fmt.allocPrint(testing.allocator, "{s}/.zig-cache/tmp/{s}", .{ cwd, tmp.sub_path });
     defer testing.allocator.free(folder);
-    const first = try Exporter.outputPath(testing.allocator, io, folder, "trip/P1.JPG", "-edit", ".jpg");
+    const first = try Exporter.outputPath(testing.allocator, io, folder, try Exporter.stemFor(testing.allocator, "trip/P1.JPG", "", 1), "-edit", ".jpg");
     defer testing.allocator.free(first);
     try testing.expect(std.mem.endsWith(u8, first, "/P1-edit.jpg"));
     try tmp.dir.writeFile(io, .{ .sub_path = "P1-edit.jpg", .data = "x" });
-    const second = try Exporter.outputPath(testing.allocator, io, folder, "trip/P1.JPG", "-edit", ".jpg");
+    const second = try Exporter.outputPath(testing.allocator, io, folder, try Exporter.stemFor(testing.allocator, "trip/P1.JPG", "", 1), "-edit", ".jpg");
     defer testing.allocator.free(second);
     try testing.expect(std.mem.endsWith(u8, second, "/P1-edit-2.jpg"));
 }
@@ -245,4 +246,33 @@ test "a background task asked for now jumps every queue; background runs newest 
     const order = [_]*Pool.Task{ &tasks[1], &tasks[0], &tasks[3], &tasks[2] };
     for (order) |want| try testing.expectEqual(want, pool.queues[0].pop() orelse pool.queues[1].pop().?);
     try testing.expectEqual(null, pool.queues[1].pop());
+}
+
+test "an export is named after its photo, or the name asked for" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try testing.expectEqualStrings("P1", try Exporter.stemFor(a, "trip/P1.JPG", "", 1));
+    try testing.expectEqualStrings("church", try Exporter.stemFor(a, "trip/P1.JPG", "church.jpg", 1));
+    try testing.expectEqualStrings("barcelona-P1", try Exporter.stemFor(a, "trip/P1.JPG", "barcelona", 3));
+}
+
+test "a starter shader deleted stays deleted" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var cwd_buf: [std.c.PATH_MAX]u8 = undefined;
+    const cwd = std.mem.sliceTo(std.c.getcwd(&cwd_buf, cwd_buf.len).?, 0);
+    const config = try std.fmt.allocPrint(testing.allocator, "{s}/.zig-cache/tmp/{s}", .{ cwd, tmp.sub_path });
+    defer testing.allocator.free(config);
+    {
+        var lib = try Library.init(testing.allocator, io, config);
+        defer lib.deinit();
+        try lib.deleteShader("bloom");
+    }
+    var lib = try Library.init(testing.allocator, io, config);
+    defer lib.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    for (try lib.shaderNames(arena.allocator())) |n| try testing.expect(!std.mem.eql(u8, n, "bloom"));
 }
