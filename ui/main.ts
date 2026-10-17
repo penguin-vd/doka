@@ -12,6 +12,12 @@ import { Sidebar } from './sidebar.js';
 import { Header } from './header.js';
 import { AdjustPanel } from './adjust.js';
 import { ClaudeBar, listenToClaude } from './claude.js';
+import { Library } from './library.js';
+import { LooksPanel } from './looks.js';
+import { CropPanel } from './crop.js';
+import { ExportDialog } from './exportdialog.js';
+import { renderExport, type ExportJob } from './exporter.js';
+import { writeCube } from './gl/cube.js';
 
 // The preview's long edge: about the screen's, so the stage never shows upscaled pixels.
 const previewEdge = Math.min(4096, Math.max(1600, Math.round(Math.max(screen.width, screen.height) * (window.devicePixelRatio || 1))));
@@ -35,6 +41,9 @@ async function boot() {
     clear(empty, h('p', {}, `This needs WebGL2 with float render targets: ${gpu.error || 'missing'}.`));
   }
   const viewer = new Viewer(stage);
+  const library = new Library();
+  await library.refresh();
+  const exportDialog = new ExportDialog();
 
   const exif = h('span', { class: 'footer__exif mono' });
   const footer = h('div', { class: 'footer' },
@@ -49,14 +58,14 @@ async function boot() {
     undo: () => store.step('undo').catch(report),
     redo: () => store.step('redo').catch(report),
     toggleBefore: () => { store.before = !store.before; store.notify(); },
-    exportPhoto: () => {},
+    exportPhoto: () => exportDialog.open().catch(report),
   });
 
   const adjust = new AdjustPanel();
   const panels: Record<Tab, { el: HTMLElement; update(): void }> = {
     adjust,
-    looks: { el: h('div', { class: 'panel__body' }, h('p', { class: 'hint' }, 'Looks arrive in step 7.')), update() {} },
-    crop: { el: h('div', { class: 'panel__body' }, h('p', { class: 'hint' }, 'Crop arrives in step 7.')), update() {} },
+    looks: new LooksPanel(library, viewer),
+    crop: new CropPanel(viewer),
   };
   const tabNames: [Tab, string][] = [['adjust', 'Adjust'], ['looks', 'Looks'], ['crop', 'Crop']];
   const tabs = tabNames.map(([t, label]) => h('button', { type: 'button', class: 'tab', role: 'tab', onclick: () => { store.tab = t; store.notify(); } }, label));
@@ -69,7 +78,25 @@ async function boot() {
 
   const claudeBar = new ClaudeBar();
   document.body.append(header.el, h('div', { class: 'layout' }, sidebar.el, h('main', { class: 'stage' }, claudeBar.el, stage, footer), panel));
-  listenToClaude(viewer, header, previewEdge);
+  listenToClaude(viewer, header, library, previewEdge);
+  library.subscribe(() => { if (store.photo) library.prepare(viewer.pipeline, store.recipe).then(() => viewer.schedule()).catch(report); });
+
+  // The app asks; the page answers (src/app/app.zig, ask).
+  on('compileShader', async ({ id, name, source, def }: { id: number; name: string; source: string; def: { description: string; params: never[]; needs: string[] } }) => {
+    const error = library.check(viewer.pipeline, { name, description: def.description ?? '', params: def.params ?? [], needs: def.needs ?? [] }, source);
+    await call('answer', { id, error });
+  });
+  on('bakeLook', async ({ id, size, title }: { id: number; size: number; title: string }) => {
+    let cube = '';
+    try {
+      await library.prepare(viewer.pipeline, store.recipe);
+      cube = writeCube(title, size, viewer.pipeline.bakeLattice(store.recipe, size));
+    } catch (e) { report(e); }
+    await call('answer', { id, cube });
+  });
+  on('export', (job: ExportJob) => {
+    renderExport(job, library, (done) => window.doka.event('exportProgress', { index: job.index, total: job.total, rel: job.rel, done })).catch(report);
+  });
 
   let shownTab: Tab | null = null;
   store.subscribe(() => {
@@ -88,6 +115,7 @@ async function boot() {
       exif.textContent = [i.make && i.model ? `${i.model}` : '', i.lens, i.exposure && `${i.exposure} s`, i.aperture && `f/${i.aperture.replace(/^f\//, '')}`, i.iso && `ISO ${i.iso}`].filter(Boolean).join(' · ');
       recipeText.textContent = JSON.stringify(withoutDefaults(p.recipe), null, 2);
       viewer.load(p.rel, previewEdge).catch(report);
+      library.prepare(viewer.pipeline, p.recipe).then((changed) => { if (changed) viewer.schedule(); }).catch(report);
     } else {
       exif.textContent = '';
       viewer.unload();
@@ -104,6 +132,7 @@ async function boot() {
     if (e.key === 'ArrowLeft' && !(e.target as Element).closest('input')) { e.preventDefault(); step(-1); }
     else if (e.key === 'ArrowRight' && !(e.target as Element).closest('input')) { e.preventDefault(); step(1); }
     else if (e.key === '\\' && !e.repeat) { store.before = true; store.notify(); }
+    else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'e') { e.preventDefault(); exportDialog.open().catch(report); }
     else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
       e.preventDefault();
       store.step(e.shiftKey ? 'redo' : 'undo').catch(report);
@@ -118,6 +147,7 @@ async function boot() {
     store, viewer, openPhoto, step,
     edit: (patch: unknown) => store.edit(patch),
     tab: (t: Tab) => { store.tab = t; store.notify(); },
+    library, exportDialog,
     before: (on: boolean) => { store.before = on; store.notify(); },
     wait: (ms: number) => new Promise((r) => setTimeout(r, ms)),
   };

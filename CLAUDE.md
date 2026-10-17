@@ -6,6 +6,7 @@ A small, fast Linux photo editor in Zig, with a webview UI, a GLSL processing pi
 
 - **Never modify original photos.** All edits are recipes in `<root>/.photo-editor/`. Exports go to a separate file.
 - **Never strip metadata.** Camera, lens, exposure, date and ICC profile must survive every export. GPS is removed only when the user explicitly unticks it.
+- Tests that export write to ~/Pictures/Doka by default: delete what a test run left there.
 - **The real photo library is read-only during development.** The owner's photos are in `/mnt/games/Pictures` (dated subfolders of Olympus E-P7 JPEGs; confirmed 2026-10-17). Tests and experiments copy photos into a temp folder first; never write into the library, not even `.photo-editor/`, unless the owner runs the app on it.
 - **Keep it simple.** No new tools, tabs, dependencies or frameworks beyond the spec without asking.
 
@@ -19,6 +20,7 @@ zig build probe        # hidden window: WebGL2 float targets, then the pipeline'
                        # the app drawn off the screen, saved as a PNG: how to look at it; never open a visible window
 ./zig-out/bin/doka --offscreen --shots DIR testdata/photos &   # MCP on :7777, a PNG per tool call
 scripts/setup.sh       # once per clone: git's pre-commit (format, changelog, test, probe)
+scripts/starter-looks.py   # twelve film looks into ~/.config/doka/looks (downloads 420 MB once)
 ```
 
 Layout: `src/core/` is `photo-core` (libvips, no window: `decode`, `encode` + `exif`, `Recipe`,

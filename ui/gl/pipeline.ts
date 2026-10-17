@@ -23,7 +23,7 @@ export interface ShaderDef {
   needs: string[];
 }
 
-interface Compiled { def: ShaderDef; prog: Program; colourOnly: boolean; }
+export interface Compiled { def: ShaderDef; prog: Program; colourOnly: boolean; }
 
 export interface Output {
   // null: the canvas.

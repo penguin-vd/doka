@@ -257,3 +257,12 @@ test "a photo tagged as turned decodes upright" {
     try testing.expectEqual(vips.width(out.?), lin.height);
     try testing.expectEqual(lin.width, lin.full_width);
 }
+
+test "an Adobe RGB original exported as sRGB says sRGB in EXIF" {
+    try start();
+    var e = try exportOf(tagged, .{ .format = .png });
+    defer e.deinit();
+    const b = try open(e.path);
+    defer vips.unref(b);
+    try testing.expectEqualStrings("1", vips.string(b, "exif-ifd2-ColorSpace").?);
+}

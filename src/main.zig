@@ -9,6 +9,7 @@ const Pool = @import("app/jobs.zig");
 const Settings = @import("app/settings.zig");
 const Mcp = @import("app/mcp.zig");
 const tools = @import("app/tools.zig");
+const Library = @import("app/library.zig");
 
 const log = std.log.scoped(.doka);
 
@@ -74,12 +75,18 @@ pub fn main(init: std.process.Init) !u8 {
     var settings_arena: std.heap.ArenaAllocator = .init(gpa);
     const settings = Settings.load(init.io, settings_arena.allocator(), config_dir);
 
+    var library = try Library.init(gpa, init.io, config_dir);
+    defer library.deinit();
+
     var window: Window = undefined;
     var app: App = .{
         .gpa = gpa,
         .io = init.io,
+        .env = init.environ_map,
         .window = &window,
         .images = &images,
+        .pool = &pool,
+        .library = &library,
         .config_dir = config_dir,
         .settings_arena = settings_arena,
         .settings = settings,
@@ -91,6 +98,9 @@ pub fn main(init: std.process.Init) !u8 {
         .shots_dir = shots_dir,
     };
     defer app.deinit();
+    app.exporter = .{ .app = &app };
+    library.on_change = .{ .ctx = &app, .f = App.onLibraryChange };
+    library.watch();
 
     const handler: Window.Handler = .{ .ctx = &app, .handle = serve };
     const mode: Window.Mode = if (probe) .hidden else if (shot != null or offscreen) .offscreen else .visible;
@@ -127,6 +137,8 @@ fn serve(ctx: *anyopaque, request: *Window.Request) void {
     const app: *App = @ptrCast(@alignCast(ctx));
     const path = Window.path(request);
     if (app.images.handle(request, path)) return;
+    if (app.library.handle(request, path)) return;
+    if (app.exporter.handle(request, path)) return;
     Window.fail(request, 404, "not found");
 }
 

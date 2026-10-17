@@ -152,3 +152,78 @@ test "MCP answers only its own host" {
     try testing.expect(!Mcp.hostAllowed("evil.example:7777"));
     try testing.expect(!Mcp.hostAllowed("127.0.0.1.evil.example"));
 }
+
+test "Claude's tool list is valid JSON, one entry per tool with a schema" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const list = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), tools.definitions, .{});
+    const want = [_][]const u8{ "get_view", "set_edits", "open_photo", "list_photos", "undo", "export", "list_looks", "list_shaders", "get_shader", "save_shader", "delete_shader", "bake_look" };
+    try testing.expectEqual(want.len, list.array.items.len);
+    for (list.array.items, want) |t, name| {
+        try testing.expectEqualStrings(name, t.object.get("name").?.string);
+        try testing.expectEqualStrings("object", t.object.get("inputSchema").?.object.get("type").?.string);
+    }
+}
+
+const Library = @import("library.zig");
+
+test "look and shader names can't leave their folder" {
+    try testing.expect(Library.validName("split-tone"));
+    try testing.expect(Library.validName("Portra 400.cube"));
+    try testing.expect(!Library.validName("../x"));
+    try testing.expect(!Library.validName(".versions"));
+    try testing.expect(!Library.validName("a/b"));
+    try testing.expect(Library.validParam("shadows"));
+    try testing.expect(!Library.validParam("2x"));
+    try testing.expect(!Library.validParam("a;b"));
+}
+
+test "a shader saved twice keeps the old version, and only the newest five" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var cwd_buf: [std.c.PATH_MAX]u8 = undefined;
+    const cwd = std.mem.sliceTo(std.c.getcwd(&cwd_buf, cwd_buf.len).?, 0);
+    const config = try std.fmt.allocPrint(testing.allocator, "{s}/.zig-cache/tmp/{s}", .{ cwd, tmp.sub_path });
+    defer testing.allocator.free(config);
+    var lib = try Library.init(testing.allocator, io, config);
+    defer lib.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    for (0..8) |i| try lib.saveShader(a, "tone", try std.fmt.allocPrint(a, "vec3 effect(vec3 c) {{ return c * {d}.0; }}", .{i}), "{\"description\":\"t\"}", i);
+    const sh = try lib.readShader(a, "tone");
+    try testing.expect(std.mem.indexOf(u8, sh.source, "7.0") != null);
+    var versions = try tmp.dir.openDir(io, "shaders/tone/.versions", .{ .iterate = true });
+    defer versions.close(io);
+    var n: usize = 0;
+    var it = versions.iterate();
+    while (try it.next(io)) |e| if (std.mem.endsWith(u8, e.name, ".glsl")) {
+        n += 1;
+    };
+    try testing.expectEqual(Library.versions_kept, n);
+    try lib.deleteShader("tone");
+    // A new shaders folder starts with the spec's example.
+    const left = try lib.shaderNames(a);
+    try testing.expectEqual(1, left.len);
+    try testing.expectEqualStrings("split-tone", left[0]);
+}
+
+const Exporter = @import("exporter.zig");
+
+test "an export never takes a name that's already there" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var cwd_buf: [std.c.PATH_MAX]u8 = undefined;
+    const cwd = std.mem.sliceTo(std.c.getcwd(&cwd_buf, cwd_buf.len).?, 0);
+    const folder = try std.fmt.allocPrint(testing.allocator, "{s}/.zig-cache/tmp/{s}", .{ cwd, tmp.sub_path });
+    defer testing.allocator.free(folder);
+    const first = try Exporter.outputPath(testing.allocator, io, folder, "trip/P1.JPG", "-edit", ".jpg");
+    defer testing.allocator.free(first);
+    try testing.expect(std.mem.endsWith(u8, first, "/P1-edit.jpg"));
+    try tmp.dir.writeFile(io, .{ .sub_path = "P1-edit.jpg", .data = "x" });
+    const second = try Exporter.outputPath(testing.allocator, io, folder, "trip/P1.JPG", "-edit", ".jpg");
+    defer testing.allocator.free(second);
+    try testing.expect(std.mem.endsWith(u8, second, "/P1-edit-2.jpg"));
+}

@@ -7,6 +7,7 @@ import { store } from './state.js';
 import { snapshotJpeg } from './snapshot.js';
 import type { Viewer } from './viewer.js';
 import type { Header } from './header.js';
+import type { Library } from './library.js';
 
 // The pill stays this long after Claude's last call: MCP over HTTP has no "disconnected".
 const connectedFor = 10 * 60 * 1000;
@@ -31,7 +32,7 @@ export class ClaudeBar {
   }
 }
 
-export function listenToClaude(viewer: Viewer, header: Header, previewEdge: number) {
+export function listenToClaude(viewer: Viewer, header: Header, library: Library, previewEdge: number) {
   let timer = 0;
   on('claude', () => {
     header.setClaudeConnected(true);
@@ -44,6 +45,8 @@ export function listenToClaude(viewer: Viewer, header: Header, previewEdge: numb
       const p = store.photo;
       if (p) {
         await viewer.load(p.rel, previewEdge);
+        await library.settled();
+        await library.prepare(viewer.pipeline, store.recipe);
         data = snapshotJpeg(viewer.pipeline, store.recipe, edge);
       }
     } catch (e) {

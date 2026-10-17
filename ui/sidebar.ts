@@ -18,10 +18,24 @@ export class Sidebar {
       h('button', { type: 'button', class: 'btn btn--small', onclick: onOpenFolder }, icon('folder'), 'Open folder'),
       h('div', { class: 'sidebar__head' }, this.name, this.count),
       this.list,
-      h('p', { class: 'sidebar__note' }, 'Dot = edited. Originals are never changed.'));
+      h('p', { class: 'sidebar__note' }, 'Dot = edited. Originals are never changed. Ctrl or Shift-click to pick several for export.'));
     this.list.addEventListener('click', (e) => {
       const b = (e.target as Element).closest('button.thumb') as HTMLButtonElement | null;
-      if (b && b.dataset.rel) onPick(b.dataset.rel);
+      if (!b || !b.dataset.rel) return;
+      const rel = b.dataset.rel;
+      if (e.ctrlKey || e.metaKey) {
+        if (store.selected.size === 0 && store.photo) store.selected.add(store.photo.rel);
+        if (store.selected.has(rel)) store.selected.delete(rel); else store.selected.add(rel);
+        store.notify();
+      } else if (e.shiftKey && store.photo && store.folder) {
+        const rels = store.folder.photos.map((p) => p.rel);
+        const [a, z] = [rels.indexOf(store.photo.rel), rels.indexOf(rel)].sort((x, y) => x - y);
+        store.selected = new Set(rels.slice(a, z + 1));
+        store.notify();
+      } else {
+        store.selected.clear();
+        onPick(rel);
+      }
     });
     store.subscribe(() => this.update());
   }
@@ -73,6 +87,7 @@ export class Sidebar {
         b.setAttribute('aria-current', String(on));
         if (on) b.scrollIntoView({ block: 'nearest' });
       }
+      b.classList.toggle('thumb--selected', store.selected.size > 1 && store.selected.has(f.photos[i].rel));
       const edited = f.photos[i].edited;
       const dot = b.querySelector('.thumb__dot');
       if (edited && !dot) b.append(h('span', { class: 'thumb__dot', 'aria-hidden': 'true' }));

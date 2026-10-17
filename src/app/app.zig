@@ -15,6 +15,8 @@ const folders = @import("folder.zig");
 const gpu = @import("gpu.zig");
 const Mcp = @import("mcp.zig");
 const tools = @import("tools.zig");
+const Library = @import("library.zig");
+const Exporter = @import("exporter.zig");
 
 const App = @This();
 
@@ -26,8 +28,12 @@ pub const default_preview_edge = 2048;
 
 gpa: std.mem.Allocator,
 io: Io,
+env: *const std.process.Environ.Map,
 window: *Window,
 images: *Images,
+pool: *Pool,
+library: *Library,
+exporter: Exporter = undefined,
 config_dir: []const u8,
 settings_arena: std.heap.ArenaAllocator,
 settings: Settings,
@@ -53,6 +59,7 @@ exit_code: u8 = 0,
 tab: []const u8 = "adjust",
 screenshots: std.ArrayList(tools.Screenshot) = .empty,
 next_screenshot: u32 = 1,
+asks: std.ArrayList(Asked) = .empty,
 
 pub const Folder = struct {
     arena: std.heap.ArenaAllocator,
@@ -74,6 +81,7 @@ pub const Folder = struct {
 pub fn deinit(app: *App) void {
     for (app.screenshots.items) |shot| app.gpa.free(shot.text);
     app.screenshots.deinit(app.gpa);
+    app.asks.deinit(app.gpa);
     app.flush();
     app.closeFolder();
     app.settings_arena.deinit();
@@ -284,6 +292,48 @@ fn dispatch(app: *App, a: std.mem.Allocator, request: []const u8, w: *Io.Writer)
         const id: u32 = if (field(params, "id")) |v| (if (v == .integer) @intCast(v.integer) else 0) else 0;
         app.screenshotDone(id, string(params, "data") orelse "");
         return w.writeAll("null");
+    }
+    if (eql(method, "answer")) {
+        const id: u32 = if (field(params, "id")) |v| (if (v == .integer) @intCast(v.integer) else 0) else 0;
+        app.answered(id, params);
+        return w.writeAll("null");
+    }
+    if (eql(method, "library")) {
+        var s: std.json.Stringify = .{ .writer = w };
+        return app.library.write(a, &s);
+    }
+    if (eql(method, "export")) {
+        const f = &(app.folder orelse return error.NoFolder);
+        var options = app.settings.@"export";
+        if (field(params, "options")) |o| options = try std.json.parseFromValueLeaky(Settings.Export, a, o, .{ .ignore_unknown_fields = true });
+        // What the dialog chose becomes the default next time.
+        if (field(params, "remember")) |r| if (r == .bool and r.bool) {
+            const keep = app.settings_arena.allocator();
+            app.settings.@"export" = options;
+            app.settings.@"export".folder = try keep.dupe(u8, options.folder);
+            app.settings.@"export".suffix = try keep.dupe(u8, options.suffix);
+            app.saveSettings();
+        };
+        var rels: std.ArrayList([]const u8) = .empty;
+        if (field(params, "rels")) |list| if (list == .array) for (list.array.items) |r| if (r == .string) try rels.append(a, r.string);
+        if (rels.items.len == 0) if (app.current) |i| try rels.append(a, f.photos[i].rel);
+        try app.exporter.start(rels.items, options, .page);
+        return w.writeAll("null");
+    }
+    if (eql(method, "settings")) {
+        var s: std.json.Stringify = .{ .writer = w };
+        try s.beginObject();
+        try s.objectField("export");
+        try s.write(app.settings.@"export");
+        try s.objectField("defaultFolder");
+        try s.write(try Settings.defaultExportFolder(a, app.env));
+        try s.objectField("looksFolder");
+        try s.write(app.library.looks_dir);
+        try s.objectField("shadersFolder");
+        try s.write(app.library.shaders_dir);
+        try s.objectField("mcp");
+        try s.write(Mcp.url);
+        return s.endObject();
     }
     if (eql(method, "ready")) {
         app.onReady();
@@ -527,8 +577,89 @@ fn screenshotDone(app: *App, id: u32, jpeg_base64: []const u8) void {
     };
 }
 
-/// The export tool: not built yet.
+/// The export tool: the named photos (or the open one), with the app's settings unless overridden.
 pub fn exportForClaude(app: *App, call: *Mcp.Call, args: std.json.Value) !void {
-    _ = args;
-    call.finish(try Mcp.textResult(app.gpa, "Export isn't built yet.", true));
+    const f = &(app.folder orelse return error.NoFolder);
+    var options = app.settings.@"export";
+    var arena: std.heap.ArenaAllocator = .init(app.gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var rels: std.ArrayList([]const u8) = .empty;
+    if (args == .object) {
+        if (args.object.get("names")) |names| if (names == .array) for (names.array.items) |n| {
+            if (n != .string) continue;
+            try rels.append(a, f.photos[try tools.find(f, n.string)].rel);
+        };
+        if (args.object.get("format")) |v| if (v == .string) {
+            options.format = std.meta.stringToEnum(core.encode.Format, v.string) orelse return error.BadFormat;
+        };
+        if (args.object.get("quality")) |v| if (v == .integer) {
+            options.quality = @intCast(std.math.clamp(v.integer, 50, 100));
+        };
+        if (args.object.get("long_edge")) |v| if (v == .integer) {
+            options.long_edge = @intCast(std.math.clamp(v.integer, 0, 100_000));
+        };
+        if (args.object.get("gps")) |v| if (v == .bool) {
+            options.keep_gps = v.bool;
+        };
+    }
+    if (rels.items.len == 0) rels.append(a, f.photos[app.current orelse return error.NoPhoto].rel) catch {};
+    // Exports always keep the camera, lens and date (SPEC.md).
+    options.keep_metadata = true;
+    try app.exporter.start(rels.items, options, .{ .claude = call });
+}
+
+// Asking the page and waiting for its answer: compiling a shader, baking a look.
+
+pub const Asked = struct {
+    id: u32,
+    ctx: *anyopaque,
+    f: *const fn (ctx: *anyopaque, app: *App, a: std.mem.Allocator, answer: std.json.Value) void,
+    timer: c_uint = 0,
+};
+
+/// Sends `doka.event(event, {"id": N, …payload})`; `f` gets the page's `answer`, or null after `timeout_ms`.
+pub fn ask(app: *App, event: []const u8, payload_fields: []const u8, ctx: *anyopaque, f: @FieldType(Asked, "f"), timeout_ms: c_uint) void {
+    const id = app.next_screenshot;
+    app.next_screenshot +%= 1;
+    the_app = app;
+    const timer = Window.after(timeout_ms, onAskTimeout, @ptrFromInt(@as(usize, id)));
+    app.asks.append(app.gpa, .{ .id = id, .ctx = ctx, .f = f, .timer = timer }) catch {
+        Window.cancel(timer);
+        return f(ctx, app, app.gpa, .null);
+    };
+    var arena: std.heap.ArenaAllocator = .init(app.gpa);
+    defer arena.deinit();
+    const payload = std.fmt.allocPrint(arena.allocator(), "{{\"id\":{d}{s}{s}}}", .{ id, if (payload_fields.len > 0) "," else "", payload_fields }) catch return;
+    app.emit(event, payload);
+}
+
+var the_app: ?*App = null;
+
+fn onAskTimeout(ctx: ?*anyopaque) callconv(.c) c_int {
+    const app = the_app orelse return 0;
+    const id: u32 = @intCast(@intFromPtr(ctx));
+    for (app.asks.items) |*q| if (q.id == id) {
+        q.timer = 0;
+    };
+    log.warn("the page didn't answer in time", .{});
+    app.answered(id, .null);
+    return 0;
+}
+
+fn answered(app: *App, id: u32, value: std.json.Value) void {
+    for (app.asks.items, 0..) |q, i| if (q.id == id) {
+        _ = app.asks.swapRemove(i);
+        if (q.timer != 0) Window.cancel(q.timer);
+        var arena: std.heap.ArenaAllocator = .init(app.gpa);
+        defer arena.deinit();
+        q.f(q.ctx, app, arena.allocator(), value);
+        return;
+    };
+}
+
+/// Something in the looks or shaders folder changed: the page reloads its list.
+pub fn onLibraryChange(ctx: *anyopaque) void {
+    const app: *App = @ptrCast(@alignCast(ctx));
+    app.emit("library", "{}");
 }

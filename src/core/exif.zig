@@ -1,6 +1,7 @@
 //! The original's EXIF block, carried into an export byte for byte. libvips rewrites EXIF through
-//! libexif, which cuts Olympus maker notes from 17 KB to 144 bytes; patching in place keeps the
-//! block's size, so every offset (the maker note's own included) stays valid.
+//! libexif, which cuts Olympus maker notes from 17 KB to 144 bytes; patching in place keeps every
+//! offset (the maker note's own included) valid. A tag the original lacks is added by rewriting
+//! its IFD at the end of the block, which moves nothing else.
 //! Patched: orientation (the pixels are upright), pixel size, colour space, the embedded
 //! thumbnail dropped (it shows the unedited photo), and GPS when asked.
 const std = @import("std");
@@ -109,6 +110,46 @@ const Tiff = struct {
         t.zero(ifd, 2 + @as(usize, n) * 12 + 4);
     }
 
+    // A copy of the bytes with the IFD at `ifd` rewritten at the end, `added` entries in tag order,
+    // the pointer at `pointer` (an entry's value) aimed at it.
+    fn extendIfd(t: Tiff, gpa: std.mem.Allocator, pointer: usize, ifd: usize, added: []const Tag, values: anytype) ![]u8 {
+        const n = try t.count(ifd);
+        var entries: std.ArrayList([12]u8) = .empty;
+        defer entries.deinit(gpa);
+        for (0..n) |i| try entries.append(gpa, t.bytes[ifd + 2 + i * 12 ..][0..12].*);
+        for (added) |tag| {
+            const value = for (values) |v| {
+                if (v[0] == tag) break v[1];
+            } else 0;
+            var e: [12]u8 = undefined;
+            const tiny = value <= 0xFFFF;
+            std.mem.writeInt(u16, e[0..2], @intFromEnum(tag), t.endian);
+            std.mem.writeInt(u16, e[2..4], if (tiny) short else long, t.endian);
+            std.mem.writeInt(u32, e[4..8], 1, t.endian);
+            @memset(e[8..12], 0);
+            if (tiny) std.mem.writeInt(u16, e[8..10], @intCast(value), t.endian) else std.mem.writeInt(u32, e[8..12], value, t.endian);
+            try entries.append(gpa, e);
+        }
+        const endian = t.endian;
+        std.mem.sort([12]u8, entries.items, endian, struct {
+            fn lessThan(en: std.builtin.Endian, a: [12]u8, b: [12]u8) bool {
+                return std.mem.readInt(u16, a[0..2], en) < std.mem.readInt(u16, b[0..2], en);
+            }
+        }.lessThan);
+        const next = try t.u32At(ifd + 2 + @as(usize, n) * 12);
+        // IFDs start on a word boundary.
+        const start = std.mem.alignForward(usize, t.bytes.len, 2);
+        const out = try gpa.alloc(u8, start + 2 + entries.items.len * 12 + 4);
+        @memcpy(out[0..t.bytes.len], t.bytes);
+        @memset(out[t.bytes.len..start], 0);
+        const o: Tiff = .{ .bytes = out, .endian = endian };
+        o.put16(start, @intCast(entries.items.len));
+        for (entries.items, 0..) |e, i| @memcpy(out[start + 2 + i * 12 ..][0..12], &e);
+        o.put32(start + 2 + entries.items.len * 12, next);
+        o.put32(pointer + 8, @intCast(start));
+        return out;
+    }
+
     // Takes an entry out of an IFD: the rest move up, the next-IFD offset with them.
     fn remove(t: Tiff, ifd: usize, at: usize) !void {
         const n = try t.count(ifd);
@@ -125,17 +166,26 @@ pub fn prepare(gpa: std.mem.Allocator, original: []const u8, patch: Patch) ![]u8
     const tiff_bytes = if (std.mem.startsWith(u8, original, header)) original[header.len..] else original;
     if (tiff_bytes.len < 8) return error.BadExif;
     const endian: std.builtin.Endian = if (std.mem.eql(u8, tiff_bytes[0..2], "II")) .little else if (std.mem.eql(u8, tiff_bytes[0..2], "MM")) .big else return error.BadExif;
-    const t: Tiff = .{ .bytes = try gpa.dupe(u8, tiff_bytes), .endian = endian };
+    var t: Tiff = .{ .bytes = try gpa.dupe(u8, tiff_bytes), .endian = endian };
     errdefer gpa.free(t.bytes);
     if (try t.u16At(2) != 42) return error.BadExif;
     const ifd0 = try t.u32At(4);
 
     if (try t.entry(ifd0, .orientation)) |at| t.setNumber(at, 1);
+    var grown: ?[]u8 = null;
     if (try t.entry(ifd0, .exif_ifd)) |at| {
         const sub = try t.u32At(at + 8);
-        if (try t.entry(sub, .pixel_x)) |e| t.setNumber(e, patch.width);
-        if (try t.entry(sub, .pixel_y)) |e| t.setNumber(e, patch.height);
-        if (try t.entry(sub, .colour_space)) |e| t.setNumber(e, patch.colour_space);
+        const wanted = [_]struct { Tag, u32 }{ .{ .colour_space, patch.colour_space }, .{ .pixel_x, patch.width }, .{ .pixel_y, patch.height } };
+        var missing: std.ArrayList(Tag) = .empty;
+        defer missing.deinit(gpa);
+        for (wanted) |w| if (try t.entry(sub, w[0])) |e| t.setNumber(e, w[1]) else try missing.append(gpa, w[0]);
+        // A tag the camera left out can't be patched in: the Exif IFD is rewritten at the end of the
+        // block with it added, and IFD0 points there. Values keep their offsets; nothing else moves.
+        if (missing.items.len > 0) grown = try t.extendIfd(gpa, at, sub, missing.items, &wanted);
+    }
+    if (grown) |g| {
+        gpa.free(t.bytes);
+        t.bytes = g;
     }
 
     const next_at = try t.nextIfd(ifd0);

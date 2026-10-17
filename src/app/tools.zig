@@ -9,6 +9,7 @@ const Recipe = core.Recipe;
 const App = @import("app.zig");
 const Mcp = @import("mcp.zig");
 const Window = @import("window.zig");
+const Library = @import("library.zig");
 
 const log = std.log.scoped(.tools);
 
@@ -59,7 +60,25 @@ pub const definitions =
     \\ "inputSchema":{"type":"object","properties":{}}},
     \\{"name":"export","title":"Export photos",
     \\ "description":"Exports the open photo, or the named ones, with their edits, to the export folder (camera, lens, exposure and date always kept). Options default to the app's export settings.",
-    \\ "inputSchema":{"type":"object","properties":{"names":{"type":"array","items":{"type":"string"}},"format":{"type":"string","enum":["jpeg","png"]},"quality":{"type":"number","minimum":50,"maximum":100},"long_edge":{"type":"number","description":"Longest side in pixels; 0 = original size"},"gps":{"type":"boolean","description":"Keep the GPS location (default: the app's setting)"}}}}
+    \\ "inputSchema":{"type":"object","properties":{"names":{"type":"array","items":{"type":"string"}},"format":{"type":"string","enum":["jpeg","png"]},"quality":{"type":"number","minimum":50,"maximum":100},"long_edge":{"type":"number","description":"Longest side in pixels; 0 = original size"},"gps":{"type":"boolean","description":"Keep the GPS location (default: the app's setting)"}}}},
+    \\{"name":"list_looks","title":"List looks",
+    \\ "description":"The installed looks: .cube LUTs in the looks folder, by file name (use it as look.name in set_edits) and title.",
+    \\ "inputSchema":{"type":"object","properties":{}}},
+    \\{"name":"list_shaders","title":"List shaders",
+    \\ "description":"The installed shaders, with their descriptions and parameters.",
+    \\ "inputSchema":{"type":"object","properties":{}}},
+    \\{"name":"get_shader","title":"Read a shader",
+    \\ "description":"A shader's GLSL source and its shader.json (description, params, needs).",
+    \\ "inputSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}},
+    \\{"name":"save_shader","title":"Write a shader",
+    \\ "description":"Creates or replaces a shader, then applies it to the open photo and returns the view. The source defines `vec3 effect(vec3 c)` on display-encoded sRGB colour (0..1); helpers luma(c), srgbDecode(c), srgbEncode(c), hash12(vec2) are there. Each param is a `uniform float u_<name>` (declared for you) with a slider. To look at neighbouring pixels use texture(u_image, v_uv + offset * u_texel); u_resolution is the render's size in pixels. needs: [\\\"depth\\\"] gives u_depth (0 near, 1 far; flat until depth arrives). It's compiled first: a shader with errors is not saved and the errors come back. The previous version is kept (the last five).",
+    \\ "inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"letters, digits, - and _"},"source":{"type":"string"},"description":{"type":"string"},"params":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"label":{"type":"string"},"default":{"type":"number"},"min":{"type":"number"},"max":{"type":"number"}},"required":["name"]}},"needs":{"type":"array","items":{"type":"string"}},"strength":{"type":"number","description":"0..100 on the open photo, default 100"},"apply":{"type":"boolean","description":"Add it to the open photo (default true)"}},"required":["name","source"]}},
+    \\{"name":"delete_shader","title":"Delete a shader",
+    \\ "description":"Removes a shader from the shaders folder.",
+    \\ "inputSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}},
+    \\{"name":"bake_look","title":"Bake the colour into a look",
+    \\ "description":"Turns the open photo's colour settings (adjustments, look and colour-only shaders; not crop, grain, halation or vignette) into a new .cube LUT in the looks folder, usable anywhere.",
+    \\ "inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"File name; .cube is added"},"size":{"type":"number","enum":[33,65]}},"required":["name"]}}
     \\]
 ;
 
@@ -88,6 +107,11 @@ fn explain(err: anyerror) []const u8 {
         error.AmbiguousName => "more than one photo has that name; give its path in the folder",
         error.UnknownField => "set_edits got a field it doesn't know (see its description)",
         error.UnknownTool => "no such tool",
+        error.BadName => "names are letters, digits, spaces, - and _",
+        error.BadParamName => "a parameter name must be a GLSL name (letters, digits, _)",
+        error.NoSuchShader, error.FileNotFound => "no such shader (see list_shaders)",
+        error.ExportBusy => "an export is already running",
+        error.BadArguments => "missing or wrong arguments (see the tool's description)",
         else => @errorName(err),
     };
 }
@@ -133,6 +157,19 @@ fn dispatch(app: *App, a: std.mem.Allocator, call: *Mcp.Call, args: std.json.Val
         return view(app, a, call, "Undid the last change.");
     }
     if (eql(name, "export")) return app.exportForClaude(call, args);
+    if (eql(name, "list_looks") or eql(name, "list_shaders")) return listLibrary(app, a, call, eql(name, "list_looks"));
+    if (eql(name, "get_shader")) {
+        const sh = try app.library.readShader(a, string(args, "name") orelse return error.BadArguments);
+        const text = try std.fmt.allocPrint(a, "shader.json:\n{s}\n\nshader.glsl:\n{s}", .{ sh.json_text, sh.source });
+        return call.finish(try Mcp.textResult(app.gpa, text, false));
+    }
+    if (eql(name, "save_shader")) return saveShader(app, a, call, args);
+    if (eql(name, "delete_shader")) {
+        const n = string(args, "name") orelse return error.BadArguments;
+        try app.library.deleteShader(n);
+        return call.finish(try Mcp.textResult(app.gpa, try std.fmt.allocPrint(a, "Deleted the shader {s}.", .{n}), false));
+    }
+    if (eql(name, "bake_look")) return bakeLook(app, a, call, args);
     return error.UnknownTool;
 }
 
@@ -304,4 +341,138 @@ pub fn finishScreenshot(app: *App, shot: Screenshot, jpeg_base64: []const u8) vo
     else
         Mcp.textResult(app.gpa, shot.text, false);
     shot.call.finish(result catch return log.err("out of memory", .{}));
+}
+
+fn listLibrary(app: *App, a: std.mem.Allocator, call: *Mcp.Call, looks: bool) !void {
+    var out: Io.Writer.Allocating = .init(a);
+    var s: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .indent_1 } };
+    try s.beginObject();
+    try s.objectField("folder");
+    try s.write(if (looks) app.library.looks_dir else app.library.shaders_dir);
+    if (looks) {
+        try s.objectField("looks");
+        try s.write(try app.library.lookNames(a));
+    } else {
+        try s.objectField("shaders");
+        try s.beginArray();
+        for (try app.library.shaderNames(a)) |n| {
+            const sh = app.library.readShader(a, n) catch continue;
+            try s.write(.{ .name = n, .description = sh.json.description, .params = sh.json.params, .needs = sh.json.needs });
+        }
+        try s.endArray();
+    }
+    try s.endObject();
+    call.finish(try Mcp.textResult(app.gpa, out.written(), false));
+}
+
+// save_shader waits for the page to compile it.
+const PendingShader = struct {
+    call: *Mcp.Call,
+    name: []u8,
+    source: []u8,
+    json: []u8,
+    strength: f32,
+    apply: bool,
+
+    fn free(p: *PendingShader, gpa: std.mem.Allocator) void {
+        gpa.free(p.name);
+        gpa.free(p.source);
+        gpa.free(p.json);
+        gpa.destroy(p);
+    }
+};
+
+fn saveShader(app: *App, a: std.mem.Allocator, call: *Mcp.Call, args: std.json.Value) !void {
+    const name = string(args, "name") orelse return error.BadArguments;
+    const source = string(args, "source") orelse return error.BadArguments;
+    if (!Library.validName(name)) return error.BadName;
+    var def: Library.ShaderJson = .{ .description = string(args, "description") orelse "" };
+    if (args.object.get("params")) |p| def.params = std.json.parseFromValueLeaky([]const Library.Param, a, p, .{ .ignore_unknown_fields = true }) catch return error.BadArguments;
+    if (args.object.get("needs")) |n| def.needs = std.json.parseFromValueLeaky([]const []const u8, a, n, .{}) catch return error.BadArguments;
+    for (def.params) |p| if (!Library.validParam(p.name)) return error.BadParamName;
+    const json = try std.json.Stringify.valueAlloc(a, def, .{ .whitespace = .indent_2 });
+    const strength: f32 = if (args.object.get("strength")) |v| switch (v) {
+        .integer => |i| @floatFromInt(i),
+        .float => |f| @floatCast(f),
+        else => 100,
+    } else 100;
+    const apply = if (args.object.get("apply")) |v| v != .bool or v.bool else true;
+
+    const pending = try app.gpa.create(PendingShader);
+    pending.* = .{ .call = call, .name = try app.gpa.dupe(u8, name), .source = try app.gpa.dupe(u8, source), .json = try app.gpa.dupe(u8, json), .strength = strength, .apply = apply };
+    const fields = try std.fmt.allocPrint(a, "\"name\":{f},\"source\":{f},\"def\":{s}", .{ std.json.fmt(name, .{}), std.json.fmt(source, .{}), json });
+    app.ask("compileShader", fields, pending, compiled, 10_000);
+}
+
+fn compiled(ctx: *anyopaque, app: *App, a: std.mem.Allocator, answer: std.json.Value) void {
+    const p: *PendingShader = @ptrCast(@alignCast(ctx));
+    defer p.free(app.gpa);
+    const finish = struct {
+        fn text(call: *Mcp.Call, gpa: std.mem.Allocator, t: []const u8, is_error: bool) void {
+            call.finish(Mcp.textResult(gpa, t, is_error) catch return);
+        }
+    }.text;
+    if (answer == .null) return finish(p.call, app.gpa, "The app didn't compile the shader (no answer from the page).", true);
+    if (string(answer, "error")) |err| if (err.len > 0) {
+        const t = std.fmt.allocPrint(a, "The shader didn't compile, so nothing was saved. Lines count from the top of your source.\n{s}", .{err}) catch err;
+        return finish(p.call, app.gpa, t, true);
+    };
+    app.library.saveShader(a, p.name, p.source, p.json, app.now()) catch |err| {
+        return finish(p.call, app.gpa, std.fmt.allocPrint(a, "Compiled, but saving failed: {t}", .{err}) catch "saving failed", true);
+    };
+    // The page hears now, not when the file watcher settles: the screenshot needs the new version.
+    app.emit("library", "{}");
+    if (!p.apply or app.current == null) return finish(p.call, app.gpa, "Saved.", false);
+
+    // On the open photo: added at the end, or this one's strength changed.
+    const s = app.currentSession() catch return finish(p.call, app.gpa, "Saved.", false);
+    const r = s.recipe(a) catch return finish(p.call, app.gpa, "Saved.", false);
+    var list: std.ArrayList(Recipe.ShaderUse) = .empty;
+    var found = false;
+    for (r.shaders) |use| {
+        var u = use;
+        if (eql(use.name, p.name)) {
+            found = true;
+            u.strength = p.strength;
+            u.enabled = true;
+        }
+        list.append(a, u) catch return;
+    }
+    if (!found) list.append(a, .{ .name = p.name, .strength = p.strength }) catch return;
+    const patch_text = std.fmt.allocPrint(a, "{{\"shaders\":{f}}}", .{std.json.fmt(list.items, .{})}) catch return;
+    const patch = std.json.parseFromSliceLeaky(std.json.Value, a, patch_text, .{}) catch return;
+    const note = std.fmt.allocPrint(a, "shader {s} {d}%", .{ p.name, p.strength }) catch "";
+    _ = s.change(a, .{ .patch = patch, .by = .claude, .now = app.now(), .note = note }) catch return;
+    app.changed();
+    app.emitPhoto();
+    view(app, a, p.call, "Saved and applied.") catch |err| finish(p.call, app.gpa, @errorName(err), true);
+}
+
+const PendingBake = struct { call: *Mcp.Call, name: []u8 };
+
+fn bakeLook(app: *App, a: std.mem.Allocator, call: *Mcp.Call, args: std.json.Value) !void {
+    _ = try app.currentSession();
+    const raw = string(args, "name") orelse return error.BadArguments;
+    const name = if (std.ascii.endsWithIgnoreCase(raw, ".cube")) raw else try std.fmt.allocPrint(a, "{s}.cube", .{raw});
+    if (!Library.validName(name)) return error.BadName;
+    const size: u32 = if (args.object.get("size")) |v| (if (v == .integer and v.integer == 65) 65 else 33) else 33;
+    const pending = try app.gpa.create(PendingBake);
+    pending.* = .{ .call = call, .name = try app.gpa.dupe(u8, name) };
+    app.ask("bakeLook", try std.fmt.allocPrint(a, "\"size\":{d},\"title\":{f}", .{ size, std.json.fmt(name[0 .. name.len - 5], .{}) }), pending, baked, 20_000);
+}
+
+fn baked(ctx: *anyopaque, app: *App, a: std.mem.Allocator, answer: std.json.Value) void {
+    const p: *PendingBake = @ptrCast(@alignCast(ctx));
+    defer {
+        app.gpa.free(p.name);
+        app.gpa.destroy(p);
+    }
+    const cube = string(answer, "cube") orelse "";
+    const t, const is_error = if (cube.len == 0)
+        .{ "The page couldn't bake the look.", true }
+    else if (app.library.saveLook(a, p.name, cube)) |_|
+        .{ std.fmt.allocPrint(a, "Baked {s} into the looks folder; use it with set_edits look.name \"{s}\".", .{ p.name, p.name }) catch "Baked.", false }
+    else |err|
+        .{ std.fmt.allocPrint(a, "Baking worked, saving failed: {t}", .{err}) catch "saving failed", true };
+    p.call.finish(Mcp.textResult(app.gpa, t, is_error) catch return);
 }

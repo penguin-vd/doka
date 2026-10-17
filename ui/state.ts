@@ -95,6 +95,8 @@ class Store {
   photo: Photo | null = null;
   tab: Tab = 'adjust';
   before = false;
+  // Photos picked with Ctrl or Shift for a batch export.
+  selected = new Set<string>();
   private listeners = new Set<Listener>();
   // Edits sent but not yet answered; while dragging the page keeps its own copy.
   private pending = 0;
