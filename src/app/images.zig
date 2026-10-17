@@ -92,10 +92,10 @@ fn photo(self: *Images, request: *Window.Request, rel: []const u8, edge: u32) !v
     try d.waiting.append(self.gpa, request);
 }
 
-/// Decodes a photo ahead of time (a neighbour of the one on screen).
-pub fn prefetch(self: *Images, rel: []const u8, edge: u32) void {
+/// Decodes a photo before the page asks for it.
+pub fn prefetch(self: *Images, rel: []const u8, edge: u32, priority: Pool.Priority) void {
     if (self.root == null or self.lookup(rel, edge) != null) return;
-    _ = self.decode(rel, edge, .background) catch |err| log.warn("prefetch {s}: {t}", .{ rel, err });
+    _ = self.decode(rel, edge, priority) catch |err| log.warn("prefetch {s}: {t}", .{ rel, err });
 }
 
 /// The decoded photo when it's cached, for export.
@@ -164,8 +164,12 @@ const Decode = struct {
             self.gpa.free(d.rel);
         }
         self.gpa.destroy(d);
+        // A decode's float buffers (tens of MB) go back to the system, not to glibc's per-thread arenas.
+        _ = malloc_trim(0);
     }
 };
+
+pub extern fn malloc_trim(pad: usize) c_int;
 
 // Takes ownership of `rel` and `linear`.
 fn store(self: *Images, rel: []u8, edge: u32, linear: core.decode.Linear) void {
@@ -254,5 +258,6 @@ const Thumb = struct {
         gpa.free(t.root);
         gpa.free(t.rel);
         gpa.destroy(t);
+        _ = malloc_trim(0);
     }
 };

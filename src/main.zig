@@ -30,6 +30,7 @@ const usage =
 ;
 
 pub fn main(init: std.process.Init) !u8 {
+    const started = std.Io.Timestamp.now(init.io, .awake).nanoseconds;
     const gpa = init.gpa;
     const arena = init.arena.allocator();
     var folder: ?[]const u8 = null;
@@ -96,6 +97,7 @@ pub fn main(init: std.process.Init) !u8 {
         .shot_script = script,
         .ephemeral = probe or shot != null or offscreen,
         .shots_dir = shots_dir,
+        .started = started,
     };
     defer app.deinit();
     app.exporter = .{ .app = &app };

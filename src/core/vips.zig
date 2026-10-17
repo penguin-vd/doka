@@ -29,6 +29,10 @@ pub fn init(argv0: [*:0]const u8) error{VipsInit}!void {
     // The openslide module is optional and usually missing; its load warning is noise.
     _ = c.g_log_set_handler("VIPS", log_warning, onWarning, null);
     if (c.vips_init(argv0) != 0) return error.VipsInit;
+    // libvips keeps recent operations' results to reuse; this app never asks twice, and the cache
+    // would hold decoded photos (hundreds of MB) for nothing.
+    c.vips_cache_set_max(0);
+    c.vips_cache_set_max_mem(0);
 }
 
 // libvips can't start again after this, so only at exit.
@@ -150,6 +154,8 @@ pub const c = struct {
     extern fn vips_init(argv0: [*:0]const u8) c_int;
     extern fn vips_shutdown() void;
     extern fn vips_version(flag: c_int) c_int;
+    extern fn vips_cache_set_max(max: c_int) void;
+    extern fn vips_cache_set_max_mem(max: usize) void;
     extern fn vips_error_buffer() [*:0]const u8;
     extern fn vips_error_clear() void;
 

@@ -60,9 +60,9 @@ pub fn validName(name: []const u8) bool {
 pub const Param = struct {
     name: []const u8,
     label: []const u8 = "",
-    default: f32 = 0,
-    min: f32 = 0,
-    max: f32 = 1,
+    default: f64 = 0,
+    min: f64 = 0,
+    max: f64 = 1,
 };
 
 pub const ShaderJson = struct {

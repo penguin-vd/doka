@@ -1,13 +1,13 @@
 // The page: lays out the editor, loads what the app says is open, and keeps it in step.
 
 import { h, clear, icon } from './dom.js';
-import { call, on, report } from './rpc.js';
+import { call, on, report, log } from './rpc.js';
 import { store, type AppState, type Photo, type Tab } from './state.js';
 import { loadSources } from './gl/gl.js';
 import { pipelineSources } from './gl/pipeline.js';
 import { checkGpu, gpuOk } from './gpu.js';
 import { selfTest } from './selftest.js';
-import { Viewer } from './viewer.js';
+import { Viewer, fetchEarly, stageCanvas } from './viewer.js';
 import { Sidebar } from './sidebar.js';
 import { Header } from './header.js';
 import { AdjustPanel } from './adjust.js';
@@ -19,12 +19,20 @@ import { ExportDialog } from './exportdialog.js';
 import { renderExport, type ExportJob } from './exporter.js';
 import { writeCube } from './gl/cube.js';
 
-// The preview's long edge: about the screen's, so the stage never shows upscaled pixels.
-const previewEdge = Math.min(4096, Math.max(1600, Math.round(Math.max(screen.width, screen.height) * (window.devicePixelRatio || 1))));
+// The preview's long edge, as the app decodes it (src/app/app.zig, preview_edge).
+let previewEdge = 2048;
 
 async function boot() {
-  const gpu = checkGpu();
-  await loadSources(pipelineSources);
+  // Start-up overlaps: the app is already decoding the photo; the page asks for it before
+  // compiling its shaders, which takes about as long.
+  const sources = loadSources(pipelineSources);
+  const state = await call<AppState>('state');
+  previewEdge = state.previewEdge;
+  if (state.photo) fetchEarly(state.photo.rel, previewEdge);
+  await sources;
+
+  const { canvas, gl } = stageCanvas();
+  const gpu = checkGpu(gl ?? undefined);
   const { probe } = await call<{ probe: boolean }>('gpu', gpu);
   if (probe) {
     await call('selftest', gpuOk(gpu) ? selfTest() : []);
@@ -40,7 +48,8 @@ async function boot() {
   if (!gpuOk(gpu)) {
     clear(empty, h('p', {}, `This needs WebGL2 with float render targets: ${gpu.error || 'missing'}.`));
   }
-  const viewer = new Viewer(stage);
+  if (!gl || !gpuOk(gpu)) return;
+  const viewer = new Viewer(stage, canvas, gl);
   const library = new Library();
   await library.refresh();
   const exportDialog = new ExportDialog();
@@ -133,6 +142,8 @@ async function boot() {
     else if (e.key === 'ArrowRight' && !(e.target as Element).closest('input')) { e.preventDefault(); step(1); }
     else if (e.key === '\\' && !e.repeat) { store.before = true; store.notify(); }
     else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'e') { e.preventDefault(); exportDialog.open().catch(report); }
+    else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'o') { e.preventDefault(); openFolder().catch(report); }
+    else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); store.step('redo').catch(report); }
     else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
       e.preventDefault();
       store.step(e.shiftKey ? 'redo' : 'undo').catch(report);
@@ -150,13 +161,34 @@ async function boot() {
     library, exportDialog,
     before: (on: boolean) => { store.before = on; store.notify(); },
     wait: (ms: number) => new Promise((r) => setTimeout(r, ms)),
+    // Times for SPEC.md's performance targets, logged by the app.
+    async bench() {
+      const gl = viewer.pipeline.gl;
+      const time = (f: () => void) => { const t = performance.now(); f(); gl.finish(); return performance.now() - t; };
+      const busy = complete({ edits: { exposure: 0.5, contrast: 20, highlights: -30, shadows: 20, temperature: 10, saturation: 10 },
+        look: store.recipe.look, colour: { greens: { hue: 10, sat: -20, light: 0 } }, halation: 30, grain: { amount: 30, size: 40 },
+        vignette: 20, detail: { sharpen: 30, noise: 20 }, crop: { straighten: 2 } });
+      const w = viewer.canvas.width, ht = viewer.canvas.height;
+      time(() => viewer.pipeline.render(busy, { target: null, width: w, height: ht }));
+      const frames: number[] = [];
+      for (let i = 0; i < 30; i++) frames.push(time(() => viewer.pipeline.render(busy, { target: null, width: w, height: ht })));
+      frames.sort((a, b) => a - b);
+      log(`bench: frame with every effect at ${w}×${ht} from a ${viewer.pipeline.width}×${viewer.pipeline.height} preview: median ${frames[15].toFixed(1)} ms, worst ${frames[29].toFixed(1)} ms`);
+      const switches: number[] = [];
+      for (let i = 0; i < 4; i++) {
+        const t = performance.now();
+        await new Promise<void>((resolve) => { const once = () => { resolve(); }; viewer.onDraw(once); step(i % 2 ? -1 : 1); });
+        switches.push(performance.now() - t);
+        await new Promise((r) => setTimeout(r, 600));
+      }
+      log(`bench: switching photos: ${switches.map((x) => x.toFixed(0)).join(', ')} ms`);
+    },
   };
 
-  const state = await call<AppState>('state', { edge: previewEdge });
   if (state.shotTab === 'adjust' || state.shotTab === 'looks' || state.shotTab === 'crop') store.tab = state.shotTab;
   applyState(state);
 
-  // Tell the app the first frame is up (`--shot` waits for it).
+  // Tell the app the first frame is up (`--shot` waits for it, and it logs the start-up time).
   if (store.photo) {
     let told = false;
     viewer.onDraw(() => { if (!told) { told = true; call('ready'); } });
@@ -213,7 +245,7 @@ function defaultsFlat() {
   return rest;
 }
 
-import { defaults } from './state.js';
+import { defaults, complete } from './state.js';
 const emptyRecipe = defaults();
 
 boot().catch(report);

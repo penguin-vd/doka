@@ -21,6 +21,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        // The download stays small (SPEC.md: < 5 MB); ReleaseSafe keeps its stack traces.
+        .strip = if (optimize == .ReleaseFast or optimize == .ReleaseSmall) true else null,
     });
     root.addImport("photo-core", core);
     addWebview(b, root);

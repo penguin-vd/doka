@@ -15,14 +15,16 @@ pub const Task = struct {
 
 pub const Priority = enum { urgent, background };
 
-pub const workers = 4;
+// One per core, a few kept for WebKit and the main loop.
+pub const max_workers = 16;
 
 io: Io,
 mutex: Io.Mutex = .init,
 ready: Io.Condition = .init,
 queues: [2]Queue = .{ .{}, .{} },
 stopping: bool = false,
-threads: [workers]std.Thread = undefined,
+threads: [max_workers]std.Thread = undefined,
+count: usize = 0,
 
 const Queue = struct {
     head: ?*Task = null,
@@ -43,7 +45,9 @@ const Queue = struct {
 };
 
 pub fn start(pool: *Pool) !void {
-    for (&pool.threads) |*t| t.* = try std.Thread.spawn(.{}, work, .{pool});
+    const cores = std.Thread.getCpuCount() catch 4;
+    pool.count = std.math.clamp(cores -| 2, 2, max_workers);
+    for (pool.threads[0..pool.count]) |*t| t.* = try std.Thread.spawn(.{}, work, .{pool});
 }
 
 /// Waits for the running tasks; queued ones are dropped without their `done`.
@@ -52,7 +56,7 @@ pub fn stop(pool: *Pool) void {
     pool.stopping = true;
     pool.ready.broadcast(pool.io);
     pool.mutex.unlock(pool.io);
-    for (pool.threads) |t| t.join();
+    for (pool.threads[0..pool.count]) |t| t.join();
 }
 
 pub fn submit(pool: *Pool, task: *Task, priority: Priority) void {

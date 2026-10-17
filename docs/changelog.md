@@ -30,6 +30,9 @@ Changed for what someone would notice, a line under Decided for a choice whose r
   watched for edits; `scripts/starter-looks.py` installs twelve film stocks. Claude has
   list_looks, list_shaders, get_shader, save_shader (compiled before it's saved, last five kept),
   delete_shader and bake_look.
+- Faster: the first photo is up ~350 ms after start (the photo decodes while the shaders compile),
+  thumbnails use every core (200 in ~1.1 s, instant once cached), memory is handed back after
+  decodes and exports, release builds are stripped (1.3 MB). Ctrl+O, Ctrl+E and Ctrl+Y.
 - `doka --shot out.png [--eval js]` draws the app off the screen and saves a picture: how Claude
   looks at it without taking over the desktop. `zig build probe` runs the pipeline's tests on the GPU.
 
@@ -72,5 +75,8 @@ Changed for what someone would notice, a line under Decided for a choice whose r
 - Starter looks come from the RawTherapee Film Simulation Collection (CC BY-SA 4.0): converted by a
   script into the user's folder rather than kept in the repository, with a credits file beside them.
 - Crop aspect ratios are literal (4:5 is portrait on any photo); Original is the photo's own.
+- The preview is a fixed 2048 px on its long edge, chosen by the app rather than the page, so the
+  app can decode the photo before the page asks for it.
+- libvips' operation cache is off: it kept decoded photos alive; nothing here asks twice.
 - Styling is one `ui/style.css`: the design's colours, type and sizes as tokens on `:root`, and a
   few component classes (`.bar`, `.btn`, `.status`). No Tailwind: it needs a build or a CDN.

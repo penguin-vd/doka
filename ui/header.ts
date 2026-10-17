@@ -27,7 +27,7 @@ export class Header {
     this.undoBtn = iconButton('undo', 'Undo (Ctrl+Z)', a.undo);
     this.redoBtn = iconButton('redo', 'Redo (Ctrl+Shift+Z)', a.redo);
     this.beforeBtn = h('button', { type: 'button', class: 'btn btn--outline', onclick: a.toggleBefore, title: 'Hold \\ to see the original' }, icon('compare'), 'Before / after');
-    this.exportBtn = h('button', { type: 'button', class: 'btn btn--accent', onclick: a.exportPhoto }, icon('export'), 'Export');
+    this.exportBtn = h('button', { type: 'button', class: 'btn btn--accent', onclick: a.exportPhoto, title: 'Export (Ctrl+E)' }, icon('export'), 'Export');
     this.el = h('header', { class: 'bar' },
       h('div', { class: 'crumbs' },
         h('span', { class: 'crumbs__app' }, 'Doka'),

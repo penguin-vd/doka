@@ -29,29 +29,38 @@ function compile(gl: WebGL2RenderingContext, kind: number, text: string): WebGLS
   const s = gl.createShader(kind)!;
   gl.shaderSource(s, text);
   gl.compileShader(s);
-  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
-    const log = gl.getShaderInfoLog(s) ?? 'compile failed';
-    gl.deleteShader(s);
-    throw new ShaderError(log.trim());
-  }
   return s;
 }
 
-/** A program from the shared vertex shader and `fragment` (with common.glsl in front). */
-export function program(gl: WebGL2RenderingContext, fragment: string): Program {
+export interface Pending { program: WebGLProgram; vs: WebGLShader; fs: WebGLShader; }
+
+/** Compiles and links without waiting: the driver can work on several at once (`finish` waits). */
+export function startProgram(gl: WebGL2RenderingContext, fragment: string): Pending {
   const vs = compile(gl, gl.VERTEX_SHADER, source('vertex'));
   const fs = compile(gl, gl.FRAGMENT_SHADER, `#version 300 es\n${source('common')}\n${fragment}`);
   const p = gl.createProgram()!;
   gl.attachShader(p, vs);
   gl.attachShader(p, fs);
   gl.linkProgram(p);
-  gl.deleteShader(vs);
-  gl.deleteShader(fs);
+  return { program: p, vs, fs };
+}
+
+/** A program from the shared vertex shader and `fragment` (with common.glsl in front). */
+export function program(gl: WebGL2RenderingContext, fragment: string): Program {
+  return finish(gl, startProgram(gl, fragment));
+}
+
+export function finish(gl: WebGL2RenderingContext, pending: Pending): Program {
+  const { program: p, vs, fs } = pending;
   if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
-    const log = gl.getProgramInfoLog(p) ?? 'link failed';
+    const log = gl.getShaderInfoLog(fs) || gl.getShaderInfoLog(vs) || gl.getProgramInfoLog(p) || 'link failed';
+    gl.deleteShader(vs);
+    gl.deleteShader(fs);
     gl.deleteProgram(p);
     throw new ShaderError(log.trim());
   }
+  gl.deleteShader(vs);
+  gl.deleteShader(fs);
   const uniforms = new Map<string, WebGLUniformLocation>();
   const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS) as number;
   for (let i = 0; i < n; i++) {

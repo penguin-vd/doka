@@ -1,19 +1,57 @@
-# Photo editor: hand-off
+# Doka
 
-Everything Claude Code needs to start building.
+A small, fast photo editor for Linux that Claude Code can drive live: you ask in Claude Code, it
+sees the photo you see and edits it. Three tools (Adjust, Looks, Crop), non-destructive recipes,
+and exports that keep every bit of the camera's metadata. `SPEC.md` is the full spec.
 
-| File | What it is |
+## Build and run
+
+Needs Zig 0.16.0, Node 22 (only to build: it strips the UI's TypeScript), and the system's
+`libvips`, `gtk3` and `webkit2gtk-4.1`.
+
+```sh
+zig build -Doptimize=ReleaseFast     # zig-out/bin/doka, about 1.3 MB
+./zig-out/bin/doka [folder]          # opens the folder, or the last one
+scripts/starter-looks.py             # twelve film looks into ~/.config/doka/looks (once)
+scripts/setup.sh                     # for development: the git pre-commit (tests and the GPU probe)
+```
+
+## Claude Code
+
+While the app is open it serves MCP at `http://127.0.0.1:7777/mcp`. Once:
+
+```sh
+claude mcp add --transport http photo http://127.0.0.1:7777/mcp
+```
+
+Then ask in Claude Code, for example "make it more film-like". Claude's changes show with a note
+and Keep / Undo. It can also open other photos, export, and write shaders (`save_shader`) or bake
+its colour work into a new look (`bake_look`). If the app wasn't open, open it and run `/mcp`.
+
+## Where things are
+
+- Edits: `<folder>/.photo-editor/recipes/<photo>.json`, written as you edit. Delete one to reset
+  the photo. Photos themselves are never written.
+- Thumbnails: `<folder>/.photo-editor/thumbs/`.
+- Looks (`.cube` LUTs) and shaders: `~/.config/doka/looks/` and `~/.config/doka/shaders/<name>/`
+  (`shader.glsl` and `shader.json`); edits there show up at once.
+- Exports: `~/Pictures/Doka/` unless you choose another folder; never over an earlier export.
+- Settings: `~/.config/doka/settings.json`.
+
+## Keys
+
+| Key | |
 | --- | --- |
-| `PROMPT.md` | The prompt to paste into Claude Code to start |
-| `SPEC.md` | The full build spec (source of truth) |
-| `CLAUDE.md` | Project rules for Claude Code; keep it in the repo root |
-| `design/` | UI design source and notes |
-| `reference-photos/` | Three example photos, compressed, without EXIF |
+| ← → | Previous / next photo |
+| hold `\` | See the original |
+| Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y | Undo, redo |
+| Ctrl+E | Export |
+| Ctrl+O | Open folder |
+| Ctrl/Shift-click a thumbnail | Pick several for export |
+| double-click a slider | Reset it |
 
-## Start
+## Credits
 
-1. Make a new project folder next to `oubliette`, for example `~/code/photo-editor`, and unzip this into it.
-2. Open Claude Code in that folder.
-3. Paste the prompt from `PROMPT.md`.
-4. Once step 5 of the build is done, connect Claude Code to the running app:
-   `claude mcp add --transport http photo http://127.0.0.1:7777/mcp`
+The starter looks are converted from the RawTherapee Film Simulation Collection (CC BY-SA 4.0;
+Pat David, Pavlov Dmitry, Michael Ezra). They're downloaded by `scripts/starter-looks.py`, not
+kept in this repository; a `CREDITS.txt` goes beside them. The `webview` library is MIT.

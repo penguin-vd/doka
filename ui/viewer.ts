@@ -29,9 +29,32 @@ export async function fetchPhoto(rel: string, edge: number): Promise<Decoded> {
   };
 }
 
+const early = new Map<string, Promise<Decoded>>();
+
+/** Starts fetching a photo before the pipeline exists: start-up overlaps the two. */
+export function fetchEarly(rel: string, edge: number) {
+  const p = fetchPhoto(rel, edge);
+  p.catch(() => early.delete(`${rel}@${edge}`));
+  early.set(`${rel}@${edge}`, p);
+}
+
+function takeEarly(rel: string, edge: number): Promise<Decoded> {
+  const key = `${rel}@${edge}`;
+  const p = early.get(key);
+  early.delete(key);
+  return p ?? fetchPhoto(rel, edge);
+}
+
 /** The recipe without its adjustments: what "before" shows. The crop stays, so the two line up. */
 export function original(r: Recipe): Recipe {
   return { ...defaults(), crop: r.crop };
+}
+
+/** The stage's canvas and its WebGL2 context (made first: the GPU check runs on it). */
+export function stageCanvas(): { canvas: HTMLCanvasElement; gl: WebGL2RenderingContext | null } {
+  const canvas = h('canvas', { class: 'stage__canvas' });
+  // preserveDrawingBuffer: `--shot` pictures need the canvas's last frame.
+  return { canvas, gl: canvas.getContext('webgl2', { antialias: false, alpha: false, preserveDrawingBuffer: true }) };
 }
 
 export class Viewer {
@@ -46,13 +69,11 @@ export class Viewer {
   /** The canvas's place in the stage, for overlays. */
   box = { left: 0, top: 0, width: 0, height: 0 };
 
-  constructor(stage: HTMLElement) {
+  constructor(stage: HTMLElement, canvas: HTMLCanvasElement, gl: WebGL2RenderingContext) {
     this.stage = stage;
-    this.canvas = h('canvas', { class: 'stage__canvas' });
+    this.canvas = canvas;
     this.overlay = h('div', { class: 'crop hidden' });
     stage.append(this.canvas, this.overlay);
-    const gl = this.canvas.getContext('webgl2', { antialias: false, alpha: false, preserveDrawingBuffer: true });
-    if (!gl) throw new Error('no WebGL2');
     this.pipeline = new Pipeline(gl);
     new ResizeObserver(() => this.schedule()).observe(stage);
   }
@@ -67,7 +88,7 @@ export class Viewer {
     if (this.loaded === rel) return Promise.resolve();
     if (this.loading === rel && this.pending) return this.pending;
     this.loading = rel;
-    this.pending = fetchPhoto(rel, edge).then((photo) => {
+    this.pending = takeEarly(rel, edge).then((photo) => {
       // Another photo was asked for meanwhile.
       if (this.loading !== rel) return;
       this.pipeline.setSource(photo.width, photo.height, photo.rgb);

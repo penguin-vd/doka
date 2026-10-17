@@ -24,6 +24,7 @@ const log = std.log.scoped(.app);
 
 // Recipes reach the disk this long after the last change: a drag saves once, at the end.
 pub const save_delay_ms = 400;
+// About a screen's long edge: the stage never shows upscaled pixels, and a slider redraws ~4 MP.
 pub const default_preview_edge = 2048;
 
 gpa: std.mem.Allocator,
@@ -55,6 +56,9 @@ shots_dir: ?[]const u8 = null,
 shots_taken: u32 = 0,
 gpu_report: ?gpu.Report = null,
 exit_code: u8 = 0,
+// When main started, for "first photo in N ms" (SPEC.md, Performance targets).
+started: i96 = 0,
+first_frame_logged: bool = false,
 // The page's active tab, for get_view.
 tab: []const u8 = "adjust",
 screenshots: std.ArrayList(tools.Screenshot) = .empty,
@@ -137,9 +141,10 @@ pub fn open(app: *App, index: usize) !void {
     app.flush();
     app.current = index;
     _ = try app.session(index);
-    // The neighbours, so ← and → don't wait.
-    if (index + 1 < f.photos.len) app.images.prefetch(f.photos[index + 1].rel, app.preview_edge);
-    if (index > 0) app.images.prefetch(f.photos[index - 1].rel, app.preview_edge);
+    // The photo before the page asks for it (start-up), and its neighbours, so ← and → don't wait.
+    app.images.prefetch(f.photos[index].rel, app.preview_edge, .urgent);
+    if (index + 1 < f.photos.len) app.images.prefetch(f.photos[index + 1].rel, app.preview_edge, .background);
+    if (index > 0) app.images.prefetch(f.photos[index - 1].rel, app.preview_edge, .background);
 }
 
 /// The photo's session, loaded from its recipe the first time.
@@ -233,12 +238,7 @@ fn dispatch(app: *App, a: std.mem.Allocator, request: []const u8, w: *Io.Writer)
     const method = args[0].string;
     const params: std.json.Value = if (args.len > 1) args[1] else .null;
 
-    if (eql(method, "state")) {
-        if (field(params, "edge")) |e| if (e == .integer and e.integer > 0) {
-            app.preview_edge = @intCast(@min(e.integer, 8192));
-        };
-        return app.writeState(a, w);
-    }
+    if (eql(method, "state")) return app.writeState(a, w);
     if (eql(method, "openFolder")) {
         if (string(params, "path")) |p| {
             try app.openFolder(p);
@@ -388,6 +388,8 @@ pub fn writeState(app: *App, a: std.mem.Allocator, w: *Io.Writer) !void {
     try app.writePhotoValue(a, &s);
     try s.objectField("shotTab");
     try s.write(app.shot_tab);
+    try s.objectField("previewEdge");
+    try s.write(app.preview_edge);
     try s.endObject();
 }
 
@@ -480,6 +482,11 @@ fn onSelfTest(app: *App, results: []const gpu.TestResult) void {
 
 // The page has drawn what it was asked to: in `--shot`, run the script if any, then take the picture.
 fn onReady(app: *App) void {
+    if (!app.first_frame_logged) {
+        app.first_frame_logged = true;
+        const ms = @divFloor(Io.Timestamp.now(app.io, .awake).nanoseconds - app.started, std.time.ns_per_ms);
+        log.info("first frame {d} ms after start", .{ms});
+    }
     if (app.shot == null) return;
     if (app.shot_script) |script| {
         app.shot_script = null;

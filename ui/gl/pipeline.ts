@@ -8,7 +8,7 @@
 //   → halation    bright parts, blurred              (only when set)
 //   → finish      crop/straighten/rotate/flip, halation, vignette, grain, colour space, dither
 
-import { program, target, free, ShaderError, source, type Program, type Target } from './gl.js';
+import { program, startProgram, finish, target, free, ShaderError, source, type Program, type Target } from './gl.js';
 import type { Cube } from './cube.js';
 import { bands, type Recipe } from '../state.js';
 
@@ -60,13 +60,11 @@ export class Pipeline {
   constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
     if (!gl.getExtension('EXT_color_buffer_float')) throw new Error('no EXT_color_buffer_float');
-    this.progs = {
-      detail: program(gl, source('detail')),
-      develop: program(gl, source('develop')),
-      bright: program(gl, source('bright')),
-      blur: program(gl, source('blur')),
-      finish: program(gl, source('finish')),
-    };
+    // All five compile at once, then each is checked.
+    gl.getExtension('KHR_parallel_shader_compile');
+    const names = ['detail', 'develop', 'bright', 'blur', 'finish'] as const;
+    const pending = names.map((n) => startProgram(gl, source(n)));
+    this.progs = Object.fromEntries(names.map((n, i) => [n, finish(gl, pending[i])])) as Pipeline['progs'];
     this.lut = gl.createTexture()!;
     this.setLook(null);
     this.flat = gl.createTexture()!;

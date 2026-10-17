@@ -84,7 +84,7 @@ export interface Photo {
 
 export interface FolderState { name: string; path: string; photos: { rel: string; edited: boolean }[]; }
 
-export interface AppState { folder: FolderState | null; photo: Photo | null; shotTab: string; }
+export interface AppState { folder: FolderState | null; photo: Photo | null; shotTab: string; previewEdge: number; }
 
 export type Tab = 'adjust' | 'looks' | 'crop';
 

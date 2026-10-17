@@ -15,7 +15,7 @@ export class Sidebar {
 
   constructor(onOpenFolder: () => void, onPick: (rel: string) => void) {
     this.el = h('nav', { class: 'sidebar', 'aria-label': 'Photos in folder' },
-      h('button', { type: 'button', class: 'btn btn--small', onclick: onOpenFolder }, icon('folder'), 'Open folder'),
+      h('button', { type: 'button', class: 'btn btn--small', onclick: onOpenFolder, title: 'Open folder (Ctrl+O)' }, icon('folder'), 'Open folder'),
       h('div', { class: 'sidebar__head' }, this.name, this.count),
       this.list,
       h('p', { class: 'sidebar__note' }, 'Dot = edited. Originals are never changed. Ctrl or Shift-click to pick several for export.'));

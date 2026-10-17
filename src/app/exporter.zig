@@ -118,6 +118,8 @@ fn freeJob(e: *Exporter) void {
         job.pixels = &.{};
     }
     b.job = null;
+    // A full-size photo's pixels (up to hundreds of MB) go back to the system now.
+    _ = @import("images.zig").malloc_trim(0);
 }
 
 fn finish(e: *Exporter) void {

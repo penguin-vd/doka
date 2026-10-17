@@ -15,12 +15,12 @@ export interface GpuReport {
 // Outside 0..1 on purpose: an 8-bit or clamped target would lose them.
 const probe = [2.5, -0.75, 0.001, 16.0];
 
-export function checkGpu(): GpuReport {
+export function checkGpu(context?: WebGL2RenderingContext): GpuReport {
   const r: GpuReport = {
     webgl2: false, renderer: '', float_render: false, float_readback: false,
     half_float_render: false, float_linear: false, max_texture_size: 0, error: '',
   };
-  const gl = document.createElement('canvas').getContext('webgl2');
+  const gl = context ?? document.createElement('canvas').getContext('webgl2');
   if (!gl) { r.error = 'no WebGL2 context'; return r; }
   r.webgl2 = true;
   const info = gl.getExtension('WEBGL_debug_renderer_info');
@@ -31,6 +31,7 @@ export function checkGpu(): GpuReport {
   r.half_float_render = targetComplete(gl, gl.RGBA16F, gl.HALF_FLOAT);
   r.float_render = targetComplete(gl, gl.RGBA32F, gl.FLOAT);
   if (r.float_render) r.float_readback = drawsUnclamped(gl);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   return r;
 }
 
