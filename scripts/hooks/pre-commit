@@ -1,0 +1,24 @@
+#!/bin/sh
+# Git's pre-commit (scripts/setup.sh turns it on): formatting, the tests, the GPU probe, and the
+# changelog changed with the commit. `git commit --no-verify` skips it.
+set -e
+cd "$(git rev-parse --show-toplevel)"
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+
+zig_files=$(echo "$staged" | grep '\.zig$' || true)
+if [ -n "$zig_files" ] && ! zig fmt --check $zig_files; then
+    echo "pre-commit: not formatted, run zig fmt on the files above" >&2
+    exit 1
+fi
+
+# A commit of docs alone needs no changelog line.
+if echo "$staged" | grep -qv '^docs/' && ! echo "$staged" | grep -qx 'docs/changelog.md'; then
+    echo "pre-commit: every commit updates docs/changelog.md (CLAUDE.md)" >&2
+    exit 1
+fi
+
+if echo "$staged" | grep -qE '\.zig$|^build\.zig\.zon$|^ui/|^scripts/strip-types\.mjs$'; then
+    # Quiet unless it fails: the test runner lists every test.
+    out=$(zig build test 2>&1) || { echo "$out" | tail -n 40; echo "pre-commit: tests failed" >&2; exit 1; }
+    out=$(zig build probe 2>&1) || { echo "$out" | tail -n 40; echo "pre-commit: no WebGL2 float render targets, or the app crashed" >&2; exit 1; }
+fi

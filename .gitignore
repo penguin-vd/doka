@@ -1,0 +1,6 @@
+.zig-cache
+zig-out
+zig-pkg
+
+# copies of a few library photos for tests (CLAUDE.md); never commit them
+/testdata

@@ -1,0 +1,18 @@
+.{
+    .name = .doka,
+    .version = "0.1.0",
+    .fingerprint = 0x6a37d0f711cae44e, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .webview = .{
+            .url = "git+https://github.com/webview/webview?ref=0.12.0#3ab4b5d722438fc8a13e6ca830c5e2372d19a01d",
+            .hash = "N-V-__8AAApvCAAAytQB_cgXXByCvjipBvDqPIqeKoXyZw5c",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "ui",
+    },
+}

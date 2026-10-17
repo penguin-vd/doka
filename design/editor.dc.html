@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Photo editor</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#161618}
+a{color:#E8B04B}a:hover{color:#F5C977}
+input[type=range]{accent-color:#E8B04B;width:100%;margin:0;height:20px}
+button{font:inherit}
+details>summary{cursor:pointer}
+</style>
+</helmet>
+<div style="min-height: 900px; display: flex; flex-direction: column; background: #161618; color: #ECECEE; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 14px;">
+
+  <header style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 8px 16px; border-bottom: 1px solid #2E2E32; background: #1C1C1F;">
+    <div style="display: flex; align-items: center; gap: 10px; flex-grow: 1; min-width: 220px;">
+      <span style="font-weight: 600; letter-spacing: 0.02em;">[App name]</span>
+      <span style="color: #5A5A60;" aria-hidden="true">/</span>
+      <span style="color: #B4B4BA;">[Folder name]</span>
+      <span style="color: #5A5A60;" aria-hidden="true">/</span>
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #ECECEE;">{{current.name}}</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 4px;">
+      <button type="button" onClick="{{prev}}" aria-label="Previous photo" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; background: transparent; border: 0; border-radius: 8px; color: #C8C8CE; cursor: pointer;">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 5-7 7 7 7"></path></svg>
+      </button>
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #9A9AA1; min-width: 44px; text-align: center;">{{position}}</span>
+      <button type="button" onClick="{{next}}" aria-label="Next photo" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; background: transparent; border: 0; border-radius: 8px; color: #C8C8CE; cursor: pointer;">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"></path></svg>
+      </button>
+      <span style="width: 1px; height: 24px; background: #34343A; margin: 0 6px;" aria-hidden="true"></span>
+      <button type="button" aria-label="Undo" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; background: transparent; border: 0; border-radius: 8px; color: #C8C8CE; cursor: pointer;">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"></path><path d="M4 9h10a6 6 0 0 1 0 12h-3"></path></svg>
+      </button>
+      <button type="button" onClick="{{toggleBefore}}" aria-pressed="{{beforeOn}}" style="{{beforeStyle}}">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M12 4v16"></path></svg>
+        {{beforeLabel}}
+      </button>
+      <a href="Export.dc.html" style="height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 18px; margin-left: 8px; background: #E8B04B; color: #1A1408; border-radius: 8px; font-weight: 600; text-decoration: none;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"></path><path d="m7 10 5 5 5-5"></path><path d="M5 20h14"></path></svg>
+        Export
+      </a>
+    </div>
+  </header>
+
+  <div style="display: flex; flex-wrap: wrap; flex-grow: 1; align-items: stretch;">
+
+    <nav aria-label="Photos in folder" style="flex: 1 1 220px; max-width: 100%; display: flex; flex-direction: column; gap: 12px; padding: 14px 12px; background: #1A1A1D; border-right: 1px solid #2E2E32; box-sizing: border-box;">
+      <button type="button" style="height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 12px; background: #2A2A2E; color: #ECECEE; border: 0; border-radius: 8px; cursor: pointer;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg>
+        Open folder
+      </button>
+      <div style="display: flex; justify-content: space-between; align-items: baseline; padding: 0 2px;">
+        <span style="font-size: 13px; color: #D8D8DD;">[Folder name]</span>
+        <span style="font-size: 12px; color: #8E8E95;">{{count}} photos</span>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;">
+        <sc-for list="{{photos}}" as="p" hint-placeholder-count="8">
+          <button type="button" onClick="{{p.pick}}" aria-label="{{p.name}}" aria-current="{{p.current}}" style="{{p.style}}">
+            <svg viewBox="0 0 120 80" aria-hidden="true" style="display: block; width: 100%; height: auto; border-radius: 3px;">
+              <rect width="120" height="80" fill="{{p.c.water}}"></rect>
+              <rect width="120" height="26" fill="{{p.c.sky}}"></rect>
+              <rect y="26" width="120" height="30" fill="{{p.c.glow}}"></rect>
+              <circle cx="83" cy="36" r="7" fill="{{p.c.sun}}"></circle>
+              <polygon points="0,52 18,30 32,44 47,25 64,47 78,33 96,48 110,36 120,43 120,56 0,56" fill="{{p.c.far}}"></polygon>
+              <polygon points="0,56 14,43 30,52 52,40 70,54 90,44 120,54 120,60 0,60" fill="{{p.c.near}}"></polygon>
+            </svg>
+            <sc-if value="{{p.edited}}" hint-placeholder-val="{{false}}">
+              <span style="position: absolute; top: 6px; right: 6px; width: 8px; height: 8px; border-radius: 50%; background: #E8B04B; box-shadow: 0 0 0 2px #1A1A1D;" aria-hidden="true"></span>
+            </sc-if>
+          </button>
+        </sc-for>
+      </div>
+      <p style="margin: auto 0 0; font-size: 12px; color: #8E8E95;">Dot = edited. Originals are never changed.</p>
+    </nav>
+
+    <main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; background: #111113;">
+      <div style="flex-grow: 1; display: flex; align-items: center; justify-content: center; padding: 32px; min-height: 480px;">
+        <figure style="{{frameStyle}}">
+          <div style="width: 100%; height: 100%; overflow: hidden; border-radius: 2px;">
+            <div style="{{photoStyle}}">
+              <svg viewBox="0 0 120 80" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Placeholder photo" style="display: block; width: 100%; height: 100%;">
+                <rect width="120" height="80" fill="{{current.c.water}}"></rect>
+                <rect width="120" height="26" fill="{{current.c.sky}}"></rect>
+                <rect y="26" width="120" height="30" fill="{{current.c.glow}}"></rect>
+                <circle cx="83" cy="36" r="7" fill="{{current.c.sun}}"></circle>
+                <polygon points="0,52 18,30 32,44 47,25 64,47 78,33 96,48 110,36 120,43 120,56 0,56" fill="{{current.c.far}}"></polygon>
+                <polygon points="0,56 14,43 30,52 52,40 70,54 90,44 120,54 120,60 0,60" fill="{{current.c.near}}"></polygon>
+                <rect x="70" y="62" width="26" height="0.8" fill="{{current.c.sun}}" opacity="0.6"></rect>
+              </svg>
+            </div>
+          </div>
+          <sc-if value="{{before}}" hint-placeholder-val="{{false}}">
+            <span style="position: absolute; top: 12px; left: 12px; padding: 4px 10px; background: rgba(0,0,0,0.7); color: #FFFFFF; font-size: 12px; font-weight: 500; border-radius: 4px;">Original</span>
+          </sc-if>
+        </figure>
+      </div>
+
+      <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding: 10px 16px; border-top: 1px solid #2E2E32; background: #1A1A1D; font-size: 13px;">
+        <div style="display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; background: #22301F; color: #A6D99B;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-10"></path></svg>
+          Metadata kept
+        </div>
+        <span style="font-family: 'IBM Plex Mono', monospace; color: #B4B4BA; flex-grow: 1;">[Camera] · [Lens] · [Shutter] · [Aperture] · [ISO]</span>
+        <span style="font-size: 12px; color: #8E8E95;">← → to switch photos</span>
+      </div>
+    </main>
+
+    <aside style="flex: 1 1 320px; max-width: 100%; display: flex; flex-direction: column; background: #1C1C1F; border-left: 1px solid #2E2E32;">
+      <div role="tablist" aria-label="Tools" style="display: flex; gap: 4px; padding: 10px; border-bottom: 1px solid #2E2E32;">
+        <sc-for list="{{tools}}" as="t" hint-placeholder-count="3">
+          <button type="button" role="tab" aria-selected="{{t.selected}}" onClick="{{t.pick}}" style="{{t.style}}">{{t.label}}</button>
+        </sc-for>
+      </div>
+
+      <sc-if value="{{isAdjust}}" hint-placeholder-val="{{true}}">
+        <div style="flex-grow: 1; display: flex; flex-direction: column; gap: 22px; padding: 18px 18px 8px;">
+          <sc-for list="{{sections}}" as="sec" hint-placeholder-count="3">
+            <section style="display: flex; flex-direction: column; gap: 14px;">
+              <h2 style="margin: 0; font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: #9A9AA1;">{{sec.title}}</h2>
+              <sc-for list="{{sec.sliders}}" as="s" hint-placeholder-count="3">
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                  <div style="display: flex; justify-content: space-between; align-items: baseline;">
+                    <label for="{{s.id}}" style="color: #D8D8DD;">{{s.label}}</label>
+                    <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: {{s.numColor}};">{{s.display}}</span>
+                  </div>
+                  <input type="range" id="{{s.id}}" min="{{s.min}}" max="{{s.max}}" step="1" value="{{s.value}}" onChange="{{s.change}}">
+                </div>
+              </sc-for>
+            </section>
+          </sc-for>
+          <button type="button" onClick="{{resetAdjust}}" style="align-self: flex-start; height: 36px; padding: 0 12px; background: transparent; color: #B4B4BA; border: 1px solid #3A3A40; border-radius: 6px; cursor: pointer;">Reset sliders</button>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{isFilters}}" hint-placeholder-val="{{false}}">
+        <div style="flex-grow: 1; display: flex; flex-direction: column; gap: 18px; padding: 18px;">
+          <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px;">
+            <sc-for list="{{filters}}" as="f" hint-placeholder-count="7">
+              <button type="button" onClick="{{f.pick}}" aria-pressed="{{f.pressed}}" style="{{f.style}}">
+                <div style="{{f.thumbStyle}}">
+                  <svg viewBox="0 0 120 80" aria-hidden="true" style="display: block; width: 100%; height: auto;">
+                    <rect width="120" height="80" fill="{{current.c.water}}"></rect>
+                    <rect width="120" height="26" fill="{{current.c.sky}}"></rect>
+                    <rect y="26" width="120" height="30" fill="{{current.c.glow}}"></rect>
+                    <circle cx="83" cy="36" r="7" fill="{{current.c.sun}}"></circle>
+                    <polygon points="0,52 18,30 32,44 47,25 64,47 78,33 96,48 110,36 120,43 120,56 0,56" fill="{{current.c.far}}"></polygon>
+                    <polygon points="0,56 14,43 30,52 52,40 70,54 90,44 120,54 120,60 0,60" fill="{{current.c.near}}"></polygon>
+                  </svg>
+                </div>
+                <span style="font-size: 12px;">{{f.label}}</span>
+              </button>
+            </sc-for>
+          </div>
+          <sc-if value="{{hasFilter}}" hint-placeholder-val="{{true}}">
+            <div style="display: flex; flex-direction: column; gap: 4px;">
+              <div style="display: flex; justify-content: space-between; align-items: baseline;">
+                <label for="flt-strength" style="color: #D8D8DD;">Strength</label>
+                <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #E8B04B;">{{strength}}%</span>
+              </div>
+              <input type="range" id="flt-strength" min="0" max="100" value="{{strength}}" onChange="{{setStrength}}">
+            </div>
+          </sc-if>
+          <p style="margin: 0; font-size: 12px; color: #8E8E95;">Filters stack on top of your slider edits.</p>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{isCrop}}" hint-placeholder-val="{{false}}">
+        <div style="flex-grow: 1; display: flex; flex-direction: column; gap: 22px; padding: 18px;">
+          <section style="display: flex; flex-direction: column; gap: 10px;">
+            <h2 id="aspect-h" style="margin: 0; font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: #9A9AA1;">Aspect ratio</h2>
+            <div role="group" aria-labelledby="aspect-h" style="display: flex; flex-wrap: wrap; gap: 6px;">
+              <sc-for list="{{aspects}}" as="a" hint-placeholder-count="5">
+                <button type="button" onClick="{{a.pick}}" aria-pressed="{{a.pressed}}" style="{{a.style}}">{{a.label}}</button>
+              </sc-for>
+            </div>
+          </section>
+          <div style="display: flex; flex-direction: column; gap: 4px;">
+            <div style="display: flex; justify-content: space-between; align-items: baseline;">
+              <label for="crop-straighten" style="color: #D8D8DD;">Straighten</label>
+              <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #E8B04B;">{{straightenLabel}}</span>
+            </div>
+            <input type="range" id="crop-straighten" min="-15" max="15" step="1" value="{{straighten}}" onChange="{{setStraighten}}">
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button type="button" style="flex: 1; height: 44px; display: flex; align-items: center; justify-content: center; gap: 8px; background: #2A2A2E; color: #ECECEE; border: 0; border-radius: 8px; cursor: pointer;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-3-6.2"></path><path d="M20 4v4h-4"></path></svg>
+              Rotate
+            </button>
+            <button type="button" style="flex: 1; height: 44px; display: flex; align-items: center; justify-content: center; gap: 8px; background: #2A2A2E; color: #ECECEE; border: 0; border-radius: 8px; cursor: pointer;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18"></path><path d="M8 7 3 12l5 5V7z"></path><path d="m16 7 5 5-5 5V7z"></path></svg>
+              Flip
+            </button>
+          </div>
+        </div>
+      </sc-if>
+
+      <details style="margin: 8px 12px 12px; padding: 10px 12px; background: #141416; border: 1px solid #2E2E32; border-radius: 8px;">
+        <summary style="font-size: 12px; color: #B4B4BA; min-height: 24px;">Edit recipe (what Claude Code sees)</summary>
+        <pre style="margin: 10px 0 0; max-height: 200px; overflow: auto; font-family: 'IBM Plex Mono', monospace; font-size: 12px; line-height: 1.5; color: #C8C8CE; white-space: pre;">{{recipe}}</pre>
+      </details>
+    </aside>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  state = {
+    idx: 0, tool: 'adjust', before: false, filter: 'warm', strength: 70, aspect: 'Original', straighten: 0,
+    v: { exposure: 12, contrast: 8, highlights: -20, shadows: 25, temperature: 6, saturation: 10, sharpen: 30, noise: 15 }
+  };
+  renderVals() {
+    var self = this;
+    var st = this.state;
+    var v = st.v;
+    var palettes = [
+      { sky: '#9DB9D6', glow: '#E7C49A', sun: '#F6DFA8', far: '#4E5F74', near: '#33414F', water: '#5C7F9B' },
+      { sky: '#B9C9B0', glow: '#DCE3C8', sun: '#F2F0D8', far: '#4F6B4A', near: '#2F4530', water: '#3E5A48' },
+      { sky: '#E8C9A0', glow: '#F2DDB8', sun: '#FFF1C9', far: '#C08552', near: '#8E5A34', water: '#D9A877' },
+      { sky: '#1E2A44', glow: '#34406A', sun: '#E8E3C0', far: '#141B2C', near: '#0C111C', water: '#24324F' },
+      { sky: '#CFDDEA', glow: '#E9F0F5', sun: '#FFFFFF', far: '#9FB2C4', near: '#7A8EA3', water: '#DCE6EE' },
+      { sky: '#8FC3DD', glow: '#CDE6EF', sun: '#FFF7D6', far: '#6E8F7A', near: '#4C6655', water: '#3D8DB0' },
+      { sky: '#C89BB0', glow: '#EDBFA8', sun: '#FFD9B0', far: '#6A5878', near: '#483C55', water: '#8C7A95' },
+      { sky: '#A9AEB3', glow: '#C4C7CA', sun: '#DADCDE', far: '#6F767C', near: '#545A5F', water: '#8A9095' }
+    ];
+    var editedFlags = [true, false, false, true, false, false, true, false];
+    var photos = palettes.map(function (c, i) {
+      var on = i === st.idx;
+      return {
+        name: 'photo-0' + (i + 1) + '.jpg', c: c, edited: editedFlags[i] || on,
+        current: on ? 'true' : 'false',
+        style: 'position: relative; padding: 0; background: transparent; border: 2px solid ' + (on ? '#E8B04B' : 'transparent') + '; border-radius: 6px; cursor: pointer; opacity: ' + (on ? '1' : '0.85') + ';',
+        pick: function () { self.setState({ idx: i }); }
+      };
+    });
+    var current = photos[st.idx];
+    var n = photos.length;
+
+    var FILTERS = [
+      { id: 'none', label: 'None', p: {} },
+      { id: 'warm', label: 'Warm', p: { se: 0.3, s: 1.15, b: 1.03 } },
+      { id: 'cool', label: 'Cool', p: { h: -14, s: 0.9, b: 1.02 } },
+      { id: 'mono', label: 'Mono', p: { g: 1, c: 1.15 } },
+      { id: 'fade', label: 'Fade', p: { c: 0.78, b: 1.08, s: 0.8 } },
+      { id: 'punch', label: 'Punch', p: { c: 1.3, s: 1.4 } },
+      { id: 'film', label: 'Film', p: { se: 0.18, c: 0.9, s: 0.85, b: 1.05 } }
+    ];
+    function fcss(p, t) {
+      function m(x) { return 1 + ((x === undefined ? 1 : x) - 1) * t; }
+      return 'brightness(' + m(p.b) + ') contrast(' + m(p.c) + ') saturate(' + m(p.s) + ') sepia(' + (p.se || 0) * t + ') grayscale(' + (p.g || 0) * t + ') hue-rotate(' + (p.h || 0) * t + 'deg)';
+    }
+    var activeFilter = FILTERS.filter(function (f) { return f.id === st.filter; })[0] || FILTERS[0];
+    var filters = FILTERS.map(function (f) {
+      var on = f.id === st.filter;
+      return {
+        label: f.label, pressed: on ? 'true' : 'false',
+        thumbStyle: 'filter: ' + fcss(f.p, 1) + '; border-radius: 4px; overflow: hidden;',
+        style: 'display: flex; flex-direction: column; gap: 6px; padding: 4px 4px 6px; background: ' + (on ? '#2C2618' : 'transparent') + '; border: 2px solid ' + (on ? '#E8B04B' : 'transparent') + '; border-radius: 8px; color: ' + (on ? '#F5C977' : '#C8C8CE') + '; cursor: pointer;',
+        pick: function () { self.setState({ filter: f.id }); }
+      };
+    });
+
+    var defs = [
+      { title: 'Light', items: [['exposure', 'Exposure', -100, 100], ['contrast', 'Contrast', -100, 100], ['highlights', 'Highlights', -100, 100], ['shadows', 'Shadows', -100, 100]] },
+      { title: 'Color', items: [['temperature', 'Temperature', -100, 100], ['saturation', 'Saturation', -100, 100]] },
+      { title: 'Detail', items: [['sharpen', 'Sharpen', 0, 100], ['noise', 'Noise reduction', 0, 100]] }
+    ];
+    var sections = defs.map(function (d) {
+      return {
+        title: d.title,
+        sliders: d.items.map(function (it) {
+          var key = it[0];
+          var val = v[key];
+          return {
+            id: 'adj-' + key, label: it[1], min: it[2], max: it[3], value: val,
+            display: val > 0 ? '+' + val : String(val),
+            numColor: val === 0 ? '#8E8E95' : '#E8B04B',
+            change: function (e) {
+              var next = Object.assign({}, self.state.v);
+              next[key] = Number(e.target.value);
+              self.setState({ v: next });
+            }
+          };
+        })
+      };
+    });
+
+    var TOOLS = [['adjust', 'Adjust'], ['filters', 'Filters'], ['crop', 'Crop']];
+    var tools = TOOLS.map(function (t) {
+      var on = st.tool === t[0];
+      return {
+        label: t[1], selected: on ? 'true' : 'false',
+        style: 'flex: 1; height: 40px; border: 0; border-radius: 6px; cursor: pointer; font-weight: ' + (on ? '500' : '400') + '; background: ' + (on ? '#2E2E33' : 'transparent') + '; color: ' + (on ? '#FFFFFF' : '#B4B4BA') + ';',
+        pick: function () { self.setState({ tool: t[0] }); }
+      };
+    });
+
+    var ASPECTS = [['Original', '3 / 2', 920], ['1:1', '1 / 1', 600], ['4:5', '4 / 5', 500], ['3:2', '3 / 2', 920], ['16:9', '16 / 9', 960]];
+    var activeAspect = ASPECTS.filter(function (a) { return a[0] === st.aspect; })[0] || ASPECTS[0];
+    var aspects = ASPECTS.map(function (a) {
+      var on = a[0] === st.aspect;
+      return {
+        label: a[0], pressed: on ? 'true' : 'false',
+        style: 'height: 36px; padding: 0 12px; border-radius: 6px; cursor: pointer; border: 1px solid ' + (on ? '#E8B04B' : '#3A3A40') + '; background: ' + (on ? '#2C2618' : 'transparent') + '; color: ' + (on ? '#F5C977' : '#C8C8CE') + ';',
+        pick: function () { self.setState({ aspect: a[0] }); }
+      };
+    });
+
+    var adjustCss = 'brightness(' + (1 + v.exposure / 200) + ') contrast(' + (1 + v.contrast / 150) + ') saturate(' + (1 + v.saturation / 100) + ') sepia(' + Math.max(0, v.temperature) / 400 + ')';
+    var filterCss = st.before ? 'none' : adjustCss + ' ' + fcss(activeFilter.p, st.strength / 100);
+    var rot = st.before ? 0 : st.straighten;
+
+    var edits = {};
+    Object.keys(v).forEach(function (k) { if (v[k] !== 0) edits[k] = v[k]; });
+    var recipe = { file: current.name, edits: edits };
+    if (st.filter !== 'none') recipe.filter = { name: st.filter, strength: st.strength };
+    if (st.aspect !== 'Original' || st.straighten !== 0) recipe.crop = { aspect: st.aspect, straighten: st.straighten };
+
+    var on = st.before;
+    return {
+      photos: photos, current: current, count: n,
+      position: (st.idx + 1) + ' / ' + n,
+      prev: function () { self.setState({ idx: (self.state.idx + n - 1) % n }); },
+      next: function () { self.setState({ idx: (self.state.idx + 1) % n }); },
+      tools: tools,
+      isAdjust: st.tool === 'adjust', isFilters: st.tool === 'filters', isCrop: st.tool === 'crop',
+      sections: sections,
+      filters: filters, hasFilter: st.filter !== 'none', strength: st.strength,
+      setStrength: function (e) { self.setState({ strength: Number(e.target.value) }); },
+      aspects: aspects, straighten: st.straighten,
+      straightenLabel: (st.straighten > 0 ? '+' : '') + st.straighten + '°',
+      setStraighten: function (e) { self.setState({ straighten: Number(e.target.value) }); },
+      before: on, beforeOn: on ? 'true' : 'false',
+      beforeLabel: on ? 'Showing original' : 'Before / after',
+      beforeStyle: 'height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 14px; border: 1px solid ' + (on ? '#E8B04B' : '#3A3A40') + '; background: ' + (on ? '#2C2618' : 'transparent') + '; color: ' + (on ? '#F5C977' : '#D8D8DD') + '; border-radius: 8px; cursor: pointer;',
+      frameStyle: 'margin: 0; position: relative; width: 100%; max-width: ' + activeAspect[2] + 'px; max-height: 640px; aspect-ratio: ' + activeAspect[1] + ';',
+      photoStyle: 'width: 100%; height: 100%; filter: ' + filterCss + '; transform: rotate(' + rot + 'deg) scale(' + (1 + Math.abs(rot) / 25) + '); transition: filter 120ms ease, transform 120ms ease;',
+      recipe: JSON.stringify(recipe, null, 2),
+      toggleBefore: function () { self.setState({ before: !self.state.before }); },
+      resetAdjust: function () { self.setState({ v: { exposure: 0, contrast: 0, highlights: 0, shadows: 0, temperature: 0, saturation: 0, sharpen: 0, noise: 0 } }); }
+    };
+  }
+}
+</script>
+</body>
+</html>
