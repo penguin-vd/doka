@@ -18,7 +18,8 @@ zig build probe        # opens the window hidden, checks WebGL2 float render tar
 scripts/setup.sh       # once per clone: git's pre-commit (format, changelog, test, probe)
 ```
 
-Layout: `src/core/` is `photo-core` (libvips, no window); `src/app/` the window, its C bindings
+Layout: `src/core/` is `photo-core` (libvips, no window: `decode`, `encode` + `exif`, `Recipe`,
+`store`; its tests need `testdata/photos/` and skip without it); `src/app/` the window, its C bindings
 (`c.zig`) and the page's files (`ui.zig`); `ui/` the page (HTML, `style.css`, TypeScript).
 C APIs are declared by hand in Zig (`src/app/c.zig`, the `c` struct in `src/core/vips.zig`), only
 what we call: Zig 0.16's translate-c can't read GLib's headers. Add a declaration when you need a call.

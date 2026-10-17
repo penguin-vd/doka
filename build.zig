@@ -61,7 +61,9 @@ pub fn build(b: *std.Build) void {
             .use_llvm = true,
             .use_lld = use_lld,
         });
-        test_step.dependOn(&b.addRunArtifact(tests).step);
+        const run = b.addRunArtifact(tests);
+        run.setCwd(b.path(".")); // testdata/ resolves from the root
+        test_step.dependOn(&run.step);
     }
 }
 
