@@ -60,17 +60,22 @@ export class Viewer {
   /** Called after each drawn frame. */
   onDraw(fn: () => void) { this.listeners.push(fn); }
 
-  async load(rel: string, edge: number): Promise<boolean> {
-    if (this.loaded === rel || this.loading === rel) return false;
+  private pending: Promise<void> | null = null;
+
+  /** Puts the photo on the GPU; resolves when it's there (at once if it already is). */
+  load(rel: string, edge: number): Promise<void> {
+    if (this.loaded === rel) return Promise.resolve();
+    if (this.loading === rel && this.pending) return this.pending;
     this.loading = rel;
-    const photo = await fetchPhoto(rel, edge);
-    // Another photo was asked for meanwhile.
-    if (this.loading !== rel) return false;
-    this.pipeline.setSource(photo.width, photo.height, photo.rgb);
-    this.loaded = rel;
-    this.loading = null;
-    this.schedule();
-    return true;
+    this.pending = fetchPhoto(rel, edge).then((photo) => {
+      // Another photo was asked for meanwhile.
+      if (this.loading !== rel) return;
+      this.pipeline.setSource(photo.width, photo.height, photo.rgb);
+      this.loaded = rel;
+      this.loading = null;
+      this.schedule();
+    });
+    return this.pending;
   }
 
   unload() {

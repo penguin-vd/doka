@@ -13,6 +13,8 @@ const Session = @import("session.zig");
 const Settings = @import("settings.zig");
 const folders = @import("folder.zig");
 const gpu = @import("gpu.zig");
+const Mcp = @import("mcp.zig");
+const tools = @import("tools.zig");
 
 const App = @This();
 
@@ -40,8 +42,17 @@ probe: bool = false,
 shot: ?[:0]const u8 = null,
 shot_tab: []const u8 = "",
 shot_script: ?[]const u8 = null,
+// A test run (probe, shot, offscreen): settings stay as they are.
+ephemeral: bool = false,
+// `--shots DIR`: a picture after each of Claude's tool calls.
+shots_dir: ?[]const u8 = null,
+shots_taken: u32 = 0,
 gpu_report: ?gpu.Report = null,
 exit_code: u8 = 0,
+// The page's active tab, for get_view.
+tab: []const u8 = "adjust",
+screenshots: std.ArrayList(tools.Screenshot) = .empty,
+next_screenshot: u32 = 1,
 
 pub const Folder = struct {
     arena: std.heap.ArenaAllocator,
@@ -61,6 +72,8 @@ pub const Folder = struct {
 };
 
 pub fn deinit(app: *App) void {
+    for (app.screenshots.items) |shot| app.gpa.free(shot.text);
+    app.screenshots.deinit(app.gpa);
     app.flush();
     app.closeFolder();
     app.settings_arena.deinit();
@@ -106,7 +119,7 @@ pub fn openFolder(app: *App, path: []const u8) !void {
 
 /// Remembers the settings, except in `--shot` and `--probe`: a test run mustn't change the next start.
 pub fn saveSettings(app: *App) void {
-    if (app.shot != null or app.probe) return;
+    if (app.ephemeral) return;
     app.settings.save(app.io, app.gpa, app.config_dir) catch |err| log.warn("settings not saved: {t}", .{err});
 }
 
@@ -260,6 +273,18 @@ fn dispatch(app: *App, a: std.mem.Allocator, request: []const u8, w: *Io.Writer)
         app.onSelfTest(try std.json.parseFromValueLeaky([]const gpu.TestResult, a, params, .{ .ignore_unknown_fields = true }));
         return w.writeAll("null");
     }
+    if (eql(method, "tab")) {
+        const t = string(params, "tab") orelse "adjust";
+        for ([_][]const u8{ "adjust", "looks", "crop" }) |known| if (eql(t, known)) {
+            app.tab = known;
+        };
+        return w.writeAll("null");
+    }
+    if (eql(method, "screenshot")) {
+        const id: u32 = if (field(params, "id")) |v| (if (v == .integer) @intCast(v.integer) else 0) else 0;
+        app.screenshotDone(id, string(params, "data") orelse "");
+        return w.writeAll("null");
+    }
     if (eql(method, "ready")) {
         app.onReady();
         return w.writeAll("null");
@@ -363,6 +388,15 @@ pub fn emit(app: *App, name: []const u8, payload_json: []const u8) void {
     app.window.eval(js.items[0 .. js.items.len - 1 :0]);
 }
 
+/// The folder or photo changed outside the page: send it everything.
+pub fn emitState(app: *App) void {
+    var arena: std.heap.ArenaAllocator = .init(app.gpa);
+    defer arena.deinit();
+    var out: Io.Writer.Allocating = .init(arena.allocator());
+    app.writeState(arena.allocator(), &out.writer) catch return;
+    app.emit("state", out.written());
+}
+
 /// The photo on screen changed outside the page: send it its new state.
 pub fn emitPhoto(app: *App) void {
     var arena: std.heap.ArenaAllocator = .init(app.gpa);
@@ -421,4 +455,80 @@ fn shotDone(ctx: ?*anyopaque, ok: bool) void {
         app.exit_code = 1;
     }
     app.window.terminate();
+}
+
+// Claude's side: the MCP server's calls arrive here on the main loop (mcp.zig).
+
+pub fn onMcpCall(ctx: *anyopaque, call: *Mcp.Call) void {
+    const app: *App = @ptrCast(@alignCast(ctx));
+    if (app.shots_dir) |dir| {
+        app.shots_taken += 1;
+        const png = std.fmt.allocPrintSentinel(app.settings_arena.allocator(), "{s}/{d:0>2}-{s}.png", .{ dir, app.shots_taken, call.name }, 0) catch null;
+        if (png) |p| pending_shot = p;
+        // After the page has drawn the change.
+        _ = Window.after(1500, takeToolShot, app);
+    }
+    tools.run(app, call);
+}
+
+var pending_shot: ?[:0]const u8 = null;
+
+fn takeToolShot(ctx: ?*anyopaque) callconv(.c) c_int {
+    const app: *App = @ptrCast(@alignCast(ctx));
+    const png = pending_shot orelse return 0;
+    app.window.snapshot(png, struct {
+        fn done(_: ?*anyopaque, ok: bool) void {
+            if (!ok) log.warn("shot failed", .{});
+        }
+    }.done, null) catch {};
+    return 0;
+}
+
+pub fn onMcpActivity(ctx: *anyopaque) void {
+    const app: *App = @ptrCast(@alignCast(ctx));
+    app.emit("claude", "{}");
+}
+
+/// Asks the page to draw the open photo for Claude; the call is answered when it does.
+pub fn requestScreenshot(app: *App, shot: tools.Screenshot) void {
+    var s = shot;
+    s.id = app.next_screenshot;
+    app.next_screenshot +%= 1;
+    s.timer = Window.after(15_000, onScreenshotTimeout, @ptrFromInt(@as(usize, s.id)));
+    app.screenshots.append(app.gpa, s) catch {
+        tools.finishScreenshot(app, s, "");
+        return;
+    };
+    screenshot_owner = app;
+    var buf: [64]u8 = undefined;
+    app.emit("screenshot", std.fmt.bufPrint(&buf, "{{\"id\":{d},\"edge\":{d}}}", .{ s.id, tools.screenshot_edge }) catch unreachable);
+}
+
+// The timer's only context is the id; the app is one per process.
+var screenshot_owner: ?*App = null;
+
+fn onScreenshotTimeout(ctx: ?*anyopaque) callconv(.c) c_int {
+    const app = screenshot_owner orelse return 0;
+    const id: u32 = @intCast(@intFromPtr(ctx));
+    for (app.screenshots.items) |*s| if (s.id == id) {
+        s.timer = 0;
+    };
+    log.warn("the page didn't draw a screenshot in time", .{});
+    app.screenshotDone(id, "");
+    return 0;
+}
+
+fn screenshotDone(app: *App, id: u32, jpeg_base64: []const u8) void {
+    for (app.screenshots.items, 0..) |s, i| if (s.id == id) {
+        _ = app.screenshots.swapRemove(i);
+        if (s.timer != 0) Window.cancel(s.timer);
+        tools.finishScreenshot(app, s, jpeg_base64);
+        return;
+    };
+}
+
+/// The export tool: not built yet.
+pub fn exportForClaude(app: *App, call: *Mcp.Call, args: std.json.Value) !void {
+    _ = args;
+    call.finish(try Mcp.textResult(app.gpa, "Export isn't built yet.", true));
 }

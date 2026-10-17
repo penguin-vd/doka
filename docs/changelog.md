@@ -16,6 +16,10 @@ Changed for what someone would notice, a line under Decided for a choice whose r
   ← → between photos (neighbours decoded ahead), the Adjust tab on the GPU pipeline (exposure in
   stops, white balance, contrast, highlights, shadows, a film-like highlight roll-off, OKLCH
   saturation, sharpen, noise reduction), undo/redo per photo, recipes saved as you edit.
+- Claude Code edits the open photo over MCP (`claude mcp add --transport http photo
+  http://127.0.0.1:7777/mcp`): get_view (with a screenshot drawn by the pipeline), set_edits,
+  open_photo, list_photos, undo. Claude's changes show with a note and Keep / Undo; the header says
+  when Claude Code is connected.
 - `doka --shot out.png [--eval js]` draws the app off the screen and saves a picture: how Claude
   looks at it without taking over the desktop. `zig build probe` runs the pipeline's tests on the GPU.
 
@@ -42,5 +46,11 @@ Changed for what someone would notice, a line under Decided for a choice whose r
   export look the same.
 - The page is ES modules served from app://ui/ (registered secure and CORS-enabled); everything the
   app serves (photos, thumbnails) lives under that one origin.
+- The MCP server runs on its own threads and only reads requests; every tool runs on the main loop,
+  so the app's state has one owner and no locks. Each change returns the new view with its screenshot.
+- Undo on Claude's bar undoes all of Claude's pending changes as one step; redo brings them back.
+- set_edits refuses unknown fields at any depth, so a typo is an error rather than a silent no-op.
+- `doka --offscreen --shots DIR` runs the app with MCP off the screen and pictures each tool call:
+  how Claude tests the integration without a window on the desktop.
 - Styling is one `ui/style.css`: the design's colours, type and sizes as tokens on `:root`, and a
   few component classes (`.bar`, `.btn`, `.status`). No Tailwind: it needs a build or a CDN.

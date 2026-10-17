@@ -17,6 +17,7 @@ zig build test         # unit tests (the app's, and photo-core's as a second bin
 zig build probe        # hidden window: WebGL2 float targets, then the pipeline's tests on the GPU (ui/selftest.ts)
 ./zig-out/bin/doka --shot out.png testdata/photos [--tab looks] [--eval 'await test.edit({...})']
                        # the app drawn off the screen, saved as a PNG: how to look at it; never open a visible window
+./zig-out/bin/doka --offscreen --shots DIR testdata/photos &   # MCP on :7777, a PNG per tool call
 scripts/setup.sh       # once per clone: git's pre-commit (format, changelog, test, probe)
 ```
 

@@ -124,3 +124,31 @@ test "a folder lists its JPEGs, subfolders included, hidden ones not" {
     try testing.expectEqualStrings("b.jpg", photos[1].rel);
     try testing.expectEqualStrings("trip/c.jpeg", photos[2].rel);
 }
+
+const tools = @import("tools.zig");
+const Mcp = @import("mcp.zig");
+
+test "set_edits refuses a field the recipe doesn't have, at any depth" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const Recipe = @import("photo-core").Recipe;
+    try tools.validate(Recipe, try patch(a, "{\"edits\":{\"exposure\":1},\"colour\":{\"greens\":{\"hue\":3}},\"shaders\":[{\"name\":\"x\",\"params\":{\"anything\":1}}]}"));
+    try testing.expectError(error.UnknownField, tools.validate(Recipe, try patch(a, "{\"edits\":{\"bogus\":1}}")));
+    try testing.expectError(error.UnknownField, tools.validate(Recipe, try patch(a, "{\"colour\":{\"teal\":{\"hue\":1}}}")));
+    try testing.expectError(error.UnknownField, tools.validate(Recipe, try patch(a, "{\"shaders\":[{\"name\":\"x\",\"strenght\":1}]}")));
+}
+
+test "a change without a note is summed up in words" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try testing.expectEqualStrings("exposure 0.3, grain amount 25", try tools.summarize(a, try patch(a, "{\"edits\":{\"exposure\":0.3},\"grain\":{\"amount\":25}}")));
+}
+
+test "MCP answers only its own host" {
+    try testing.expect(Mcp.hostAllowed("127.0.0.1:7777"));
+    try testing.expect(Mcp.hostAllowed("localhost:7777"));
+    try testing.expect(!Mcp.hostAllowed("evil.example:7777"));
+    try testing.expect(!Mcp.hostAllowed("127.0.0.1.evil.example"));
+}

@@ -11,6 +11,7 @@ import { Viewer } from './viewer.js';
 import { Sidebar } from './sidebar.js';
 import { Header } from './header.js';
 import { AdjustPanel } from './adjust.js';
+import { ClaudeBar, listenToClaude } from './claude.js';
 
 // The preview's long edge: about the screen's, so the stage never shows upscaled pixels.
 const previewEdge = Math.min(4096, Math.max(1600, Math.round(Math.max(screen.width, screen.height) * (window.devicePixelRatio || 1))));
@@ -66,7 +67,9 @@ async function boot() {
     body,
     h('details', { class: 'recipe' }, h('summary', {}, 'Edit recipe (what Claude Code sees)'), recipeText));
 
-  document.body.append(header.el, h('div', { class: 'layout' }, sidebar.el, h('main', { class: 'stage' }, stage, footer), panel));
+  const claudeBar = new ClaudeBar();
+  document.body.append(header.el, h('div', { class: 'layout' }, sidebar.el, h('main', { class: 'stage' }, claudeBar.el, stage, footer), panel));
+  listenToClaude(viewer, header, previewEdge);
 
   let shownTab: Tab | null = null;
   store.subscribe(() => {
@@ -77,6 +80,7 @@ async function boot() {
       shownTab = store.tab;
       clear(body, panels[store.tab].el);
       tabs.forEach((t, i) => t.setAttribute('aria-selected', String(tabNames[i][0] === store.tab)));
+      call('tab', { tab: store.tab }).catch(report);
     }
     panels[store.tab].update();
     if (p) {
