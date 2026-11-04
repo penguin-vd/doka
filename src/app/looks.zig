@@ -23,6 +23,10 @@ pool: ?*Pool = null,
 on_ready: ?*const fn () void = null,
 // The look in the pipeline now.
 loaded: []u8 = "",
+// Shaders that don't compile, with the compiler's message: tried once until the files change.
+broken: std.StringHashMapUnmanaged([:0]u8) = .empty,
+// `broken` changed: the panel showing it looks again.
+broken_changed: bool = false,
 cache: [kept]?Entry = @splat(null),
 clock: u64 = 0,
 loading: ?[]u8 = null,
@@ -77,7 +81,18 @@ pub fn clear(self: *Looks) void {
         if (e.cube) |*c| c.deinit(self.gpa);
         slot.* = null;
     };
+    var it = self.broken.iterator();
+    while (it.next()) |e| {
+        self.gpa.free(e.key_ptr.*);
+        self.gpa.free(e.value_ptr.*);
+    }
+    self.broken.clearRetainingCapacity();
     self.forget();
+}
+
+/// Why this shader isn't running, if it doesn't compile.
+pub fn shaderError(self: *const Looks, name: []const u8) ?[:0]const u8 {
+    return self.broken.get(name);
 }
 
 const Parse = struct {
@@ -159,9 +174,23 @@ fn prepareShaders(self: *Looks, p: *Pipeline, r: Recipe) void {
     var scratch: std.heap.ArenaAllocator = .init(self.gpa);
     defer scratch.deinit();
     for (r.shaders) |use| {
-        if (p.hasShader(use.name)) continue;
-        self.loadShader(p, scratch.allocator(), use.name) catch |err| log.warn("shader {s}: {t} {s}", .{ use.name, err, Pipeline.last_error });
+        if (p.hasShader(use.name) or self.broken.contains(use.name)) continue;
+        self.loadShader(p, scratch.allocator(), use.name) catch |err| {
+            log.warn("shader {s}: {t} {s}", .{ use.name, err, Pipeline.last_error });
+            // A missing one says so in its row already, and may yet arrive.
+            if (err != error.ShaderCompile and err != error.ShaderLink) continue;
+            self.remember(use.name, Pipeline.last_error) catch {};
+        };
     }
+}
+
+fn remember(self: *Looks, name: []const u8, message: []const u8) !void {
+    const key = try self.gpa.dupe(u8, name);
+    errdefer self.gpa.free(key);
+    const value = try self.gpa.dupeZ(u8, message);
+    errdefer self.gpa.free(value);
+    try self.broken.put(self.gpa, key, value);
+    self.broken_changed = true;
 }
 
 /// What's in the pipeline may be stale: the next `prepare` loads it again.

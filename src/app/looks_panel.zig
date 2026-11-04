@@ -165,6 +165,7 @@ pub fn create(p: *Panel) *anyopaque {
     const scrolled = gtk.gtk_scrolled_window_new();
     gtk.gtk_scrolled_window_set_policy(scrolled, 2, 1);
     gtk.gtk_scrolled_window_set_child(scrolled, box);
+    Slider.watchPanel(scrolled);
     gtk.gtk_widget_set_vexpand(scrolled, 1);
     p.widget = scrolled;
     p.reloadLooks();
@@ -374,6 +375,7 @@ fn renderShaders(p: *Panel, a: std.mem.Allocator, r: Recipe) void {
     for (r.shaders) |u| {
         hash.update(u.name);
         hash.update(std.mem.asBytes(&u.enabled));
+        hash.update(if (p.canvas.looks.shaderError(u.name) != null) "!" else ".");
     }
     for (installed) |n| hash.update(n);
     var it = p.open.keyIterator();
@@ -420,6 +422,7 @@ fn addRow(p: *Panel, a: std.mem.Allocator, r: Recipe, use: Recipe.ShaderUse, i: 
     const name = gtk.gtk_button_new_with_label(name_z);
     gtk.gtk_widget_add_css_class(name, "flat");
     if (!use.enabled) gtk.gtk_widget_add_css_class(name, "faint");
+    if (shader) |sh| if (sh.json.description.len > 0) gtk.gtk_widget_set_tooltip_text(name, (a.dupeZ(u8, sh.json.description) catch return).ptr);
     gtk.gtk_widget_set_hexpand(name, 1);
     const action = p.gpa.create(RowAction) catch return;
     action.* = .{ .panel = p, .index = i, .kind = .open };
@@ -430,6 +433,13 @@ fn addRow(p: *Panel, a: std.mem.Allocator, r: Recipe, use: Recipe.ShaderUse, i: 
     if (i + 1 < r.shaders.len) p.rowButton(row, "go-down-symbolic", "Later", i, .down);
     p.rowButton(row, "user-trash-symbolic", "Remove from this photo", i, .remove);
     gtk.gtk_box_append(p.shader_box, row);
+    if (p.canvas.looks.shaderError(use.name)) |message| {
+        const warning = gtk.gtk_label_new("Doesn't compile, so it's left out.");
+        gtk.gtk_label_set_xalign(warning, 0);
+        gtk.gtk_label_set_wrap(warning, 1);
+        gtk.gtk_widget_set_tooltip_text(warning, message);
+        gtk.gtk_box_append(p.shader_box, warning);
+    }
     if (!p.open.contains(use.name)) return;
     const detail = gtk.gtk_box_new(gtk.vertical, 6);
     gtk.gtk_widget_add_css_class(detail, "shader-detail");

@@ -54,7 +54,10 @@ before: bool = false,
 // The line to drag across the photo.
 compare: bool = false,
 split: f64 = 0.5,
-drag: enum { pan, split, crop_move, nw, ne, sw, se, none, mask } = .pan,
+drag: Spot = .none,
+dragging: bool = false,
+// The pointer's look on the photo, so it's only told when it changes.
+cursor_name: ?[*:0]const u8 = null,
 drag_rect: cropping.Rect = .{ 0, 0, 1, 1 },
 // A crop changed by dragging: patch json, gesture is the window's.
 on_crop: ?*const fn (rect: cropping.Rect, gesture: u64) void = null,
@@ -68,6 +71,7 @@ on_mask: ?struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque, index: usize,
 // Clicks on the photo pick a subject's points: 0..1 of the photo as decoded; `keep` false with Shift.
 picking: bool = false,
 on_pick: ?struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque, at: [2]f32, keep: bool) void } = null,
+pick_keep: bool = true,
 mask_handle: Handle = .from,
 mask_start: Recipe.Mask.Place = undefined,
 mask_gesture: u64 = 0,
@@ -75,11 +79,15 @@ drag_at: [2]f64 = .{ 0, 0 },
 // Told after each drawn frame, and when a new photo is on the GPU.
 on_drawn: ?*const fn () void = null,
 on_installed: ?*const fn () void = null,
+on_failed: ?*const fn () void = null,
 zoom_label: ?*anyopaque = null,
 
 const Layout = struct { box: [4]f64, view: [4]f64, image: [2]f64 };
 
 const Handle = enum { from, to, middle, centre, across, down };
+
+// What a press at some place on the photo takes hold of.
+pub const Spot = enum { pan, split, crop_move, nw, ne, sw, se, none, mask, pick };
 
 pub fn create(c: *Canvas) *anyopaque {
     c.recipe_arena = .init(c.gpa);
@@ -98,7 +106,13 @@ pub fn create(c: *Canvas) *anyopaque {
     const drag = gtk.gtk_gesture_drag_new();
     connect(drag, "drag-begin", &onDragBegin, c);
     connect(drag, "drag-update", &onDragUpdate, c);
+    connect(drag, "drag-end", &onDragEnd, c);
     gtk.gtk_widget_add_controller(area, drag);
+    const click = gtk.gtk_gesture_click_new();
+    connect(click, "pressed", &onPressed, c);
+    gtk.gtk_widget_add_controller(area, click);
+    // Clicking the photo takes the keys back from a slider.
+    gtk.gtk_widget_set_focusable(area, 1);
     const overlay = gtk.gtk_overlay_new();
     gtk.gtk_overlay_set_child(overlay, area);
     c.overlay = gtk.gtk_drawing_area_new();
@@ -119,7 +133,7 @@ pub fn redraw(c: *Canvas) void {
 
 pub fn setPicking(c: *Canvas, on: bool) void {
     c.picking = on;
-    gtk.gtk_widget_set_cursor_from_name(c.area, if (on) "crosshair" else null);
+    c.updateCursor();
 }
 
 pub fn setCropMode(c: *Canvas, on: bool) void {
@@ -128,6 +142,7 @@ pub fn setCropMode(c: *Canvas, on: bool) void {
         c.zoom = 1;
         c.goal = 1;
     }
+    c.updateCursor();
     c.redraw();
 }
 
@@ -276,6 +291,7 @@ fn onTick(_: *anyopaque, _: *anyopaque, ctx: ?*anyopaque) callconv(.c) c_int {
     }
     if (busy) return gtk.continue_;
     c.ticking = 0;
+    c.updateCursor();
     return gtk.remove;
 }
 
@@ -305,6 +321,7 @@ fn onRealize(area: *anyopaque, ctx: ?*anyopaque) callconv(.c) void {
     const c: *Canvas = @ptrCast(@alignCast(ctx));
     gtk.gtk_gl_area_make_current(area);
     if (gtk.gtk_gl_area_get_error(area)) |e| {
+        // GTK writes this one on the area itself.
         log.err("no OpenGL: {s}", .{e.message});
         c.failed = true;
         return;
@@ -312,9 +329,14 @@ fn onRealize(area: *anyopaque, ctx: ?*anyopaque) callconv(.c) void {
     const es = gtk.gdk_gl_context_get_use_es(gtk.gtk_gl_area_get_context(area).?) != 0;
     c.pipeline = Pipeline.init(c.gpa, es) catch |err| {
         log.err("pipeline: {t}: {s}", .{ err, Pipeline.last_error });
-        c.failed = true;
+        c.fail();
         return;
     };
+}
+
+fn fail(c: *Canvas) void {
+    c.failed = true;
+    if (c.on_failed) |f| f();
 }
 
 // The waiting photo goes to the GPU.
@@ -408,9 +430,42 @@ fn onRender(area: *anyopaque, _: *anyopaque, ctx: ?*anyopaque) callconv(.c) c_in
     return 1;
 }
 
-fn onMotion(_: *anyopaque, x: f64, y: f64, ctx: ?*anyopaque) callconv(.c) void {
+pub fn onMotion(_: *anyopaque, x: f64, y: f64, ctx: ?*anyopaque) callconv(.c) void {
     const c: *Canvas = @ptrCast(@alignCast(ctx));
     c.cursor = .{ x, y };
+    c.updateCursor();
+}
+
+fn updateCursor(c: *Canvas) void {
+    const name: ?[*:0]const u8 = switch (if (c.dragging) c.drag else c.spotAt(c.cursor[0], c.cursor[1])) {
+        .pan => if (c.zoom <= 1.001) null else if (c.dragging) "grabbing" else "grab",
+        .mask => if (c.dragging) "grabbing" else "grab",
+        .split => "ew-resize",
+        .crop_move => "move",
+        .nw, .se => "nwse-resize",
+        .ne, .sw => "nesw-resize",
+        .pick => "crosshair",
+        .none => null,
+    };
+    if (name == c.cursor_name) return;
+    c.cursor_name = name;
+    gtk.gtk_widget_set_cursor_from_name(c.area, name);
+}
+
+// Double-click: from the whole photo to 100% at that place, and back.
+pub fn onPressed(_: *anyopaque, presses: c_int, x: f64, y: f64, ctx: ?*anyopaque) callconv(.c) void {
+    const c: *Canvas = @ptrCast(@alignCast(ctx));
+    if (presses != 2 or !c.ready() or !c.zoomable() or c.spotAt(x, y) != .pan) return;
+    c.cursor = .{ x, y };
+    c.goal = if (c.goal > 1.01) 1 else std.math.clamp(c.actualSize(), 2, c.maxZoom());
+    c.startTicking();
+}
+
+// The zoom at which a photo pixel is a pixel on the screen.
+fn actualSize(c: *const Canvas) f64 {
+    const fit = c.layout(1, .{ 0.5, 0.5 });
+    const scale: f64 = @floatFromInt(gtk.gtk_widget_get_scale_factor(c.area));
+    return c.full_width * c.recipe.crop.rect[2] / (fit.image[0] * scale);
 }
 
 fn onScroll(_: *anyopaque, _: f64, dy: f64, ctx: ?*anyopaque) callconv(.c) c_int {
@@ -424,40 +479,70 @@ fn onScroll(_: *anyopaque, _: f64, dy: f64, ctx: ?*anyopaque) callconv(.c) c_int
 // Grab distance for the crop's corners and the before/after line, pixels.
 const grab = 14.0;
 
-fn onDragBegin(gesture: *anyopaque, x: f64, y: f64, ctx: ?*anyopaque) callconv(.c) void {
-    const c: *Canvas = @ptrCast(@alignCast(ctx));
-    c.drag_centre = c.centre;
-    c.drag = .pan;
-    if (!c.ready()) return;
+pub fn spotAt(c: *const Canvas, x: f64, y: f64) Spot {
+    if (!c.ready()) return .none;
     const l = c.layout(c.zoom, c.centre);
-    if (c.picking and !c.crop_mode) {
-        c.drag = .none;
-        const on_pick = c.on_pick orelse return;
-        if (x < l.box[0] or y < l.box[1] or x > l.box[0] + l.box[2] or y > l.box[1] + l.box[3]) return;
-        const at = c.onPhoto(l, x, y);
-        const keep = gtk.gtk_event_controller_get_current_event_state(gesture) & gtk.shift_mask == 0;
-        on_pick.f(on_pick.ctx, .{ @floatCast(std.math.clamp(at[0], 0, 1)), @floatCast(std.math.clamp(at[1], 0, 1)) }, keep);
-        return;
-    }
     if (c.crop_mode) {
         const r = c.recipe.crop.rect;
-        c.drag_rect = .{ r[0], r[1], r[2], r[3] };
-        c.crop_gesture = @import("slider.zig").nextGesture();
-        const L = l.box[0] + r[0] * l.box[2];
-        const T = l.box[1] + r[1] * l.box[3];
-        const R = L + r[2] * l.box[2];
-        const B = T + r[3] * l.box[3];
-        const near = struct {
-            fn f(px: f64, py: f64, qx: f64, qy: f64) bool {
-                return @abs(px - qx) < grab and @abs(py - qy) < grab;
-            }
-        }.f;
-        c.drag = if (near(x, y, L, T)) .nw else if (near(x, y, R, T)) .ne else if (near(x, y, L, B)) .sw else if (near(x, y, R, B)) .se else if (x > L and x < R and y > T and y < B) .crop_move else .none;
-    } else if (c.compare and !c.before) {
-        if (@abs(x - (l.box[0] + c.split * l.box[2])) < grab and y > l.box[1] and y < l.box[1] + l.box[3]) c.drag = .split;
-        c.drag_centre = if (c.drag == .split) .{ x, y } else c.centre;
+        const spot = cropping.spotAt(.{ r[0], r[1], r[2], r[3] }, l.box, x, y, grab) orelse return .none;
+        return switch (spot) {
+            .frame => .crop_move,
+            .corner => |corner| switch (corner) {
+                .nw => .nw,
+                .ne => .ne,
+                .sw => .sw,
+                .se => .se,
+            },
+        };
     }
-    if (c.drag == .pan) c.grabMaskHandle(x, y);
+    const on_photo = x >= l.box[0] and y >= l.box[1] and x <= l.box[0] + l.box[2] and y <= l.box[1] + l.box[3];
+    if (c.picking) return if (on_photo) .pick else .none;
+    if (c.compare and !c.before and @abs(x - (l.box[0] + c.split * l.box[2])) < grab and y > l.box[1] and y < l.box[1] + l.box[3]) return .split;
+    if (c.maskHandleAt(l, x, y) != null) return .mask;
+    return .pan;
+}
+
+pub fn onDragBegin(gesture: *anyopaque, x: f64, y: f64, ctx: ?*anyopaque) callconv(.c) void {
+    const c: *Canvas = @ptrCast(@alignCast(ctx));
+    _ = gtk.gtk_widget_grab_focus(c.area);
+    c.cursor = .{ x, y };
+    c.drag = c.spotAt(x, y);
+    c.drag_centre = c.centre;
+    c.dragging = true;
+    defer c.updateCursor();
+    switch (c.drag) {
+        .none, .pan => {},
+        .pick => {
+            c.drag_at = .{ x, y };
+            c.pick_keep = gtk.gtk_event_controller_get_current_event_state(gesture) & gtk.shift_mask == 0;
+        },
+        .split => c.drag_centre = .{ x, y },
+        .mask => {
+            const m = c.activeMask().?;
+            c.mask_handle = c.maskHandleAt(c.layout(c.zoom, c.centre), x, y).?;
+            c.mask_start = m.place();
+            c.drag_at = .{ x, y };
+            c.mask_gesture = @import("slider.zig").nextGesture();
+        },
+        .crop_move, .nw, .ne, .sw, .se => {
+            const r = c.recipe.crop.rect;
+            c.drag_rect = .{ r[0], r[1], r[2], r[3] };
+            c.crop_gesture = @import("slider.zig").nextGesture();
+        },
+    }
+}
+
+pub fn onDragEnd(_: *anyopaque, _: f64, _: f64, ctx: ?*anyopaque) callconv(.c) void {
+    const c: *Canvas = @ptrCast(@alignCast(ctx));
+    c.dragging = false;
+    defer c.updateCursor();
+    // A press that became a move of the photo isn't a click on it.
+    if (c.drag != .pick) return;
+    c.drag = .none;
+    if (!c.ready()) return;
+    const on_pick = c.on_pick orelse return;
+    const at = c.onPhoto(c.layout(c.zoom, c.centre), c.drag_at[0], c.drag_at[1]);
+    on_pick.f(on_pick.ctx, .{ @floatCast(std.math.clamp(at[0], 0, 1)), @floatCast(std.math.clamp(at[1], 0, 1)) }, c.pick_keep);
 }
 
 // ---- A mask's handles ----
@@ -525,20 +610,21 @@ fn handlesOf(shape: Recipe.Mask.Shape) []const Handle {
     };
 }
 
-fn grabMaskHandle(c: *Canvas, x: f64, y: f64) void {
-    const m = c.activeMask() orelse return;
-    const l = c.layout(c.zoom, c.centre);
+// The nearest handle within reach: however close together they've been dragged.
+fn maskHandleAt(c: *const Canvas, l: Layout, x: f64, y: f64) ?Handle {
+    const m = c.activeMask() orelse return null;
     const place = m.place();
+    var best: ?Handle = null;
+    var best_distance: f64 = std.math.inf(f64);
     for (handlesOf(m.shape)) |h| {
         const at_screen = c.onScreen(l, handlePoint(place, h));
-        if (@abs(x - at_screen[0]) < grab and @abs(y - at_screen[1]) < grab) {
-            c.drag = .mask;
-            c.mask_handle = h;
-            c.mask_start = place;
-            c.drag_at = .{ x, y };
-            c.mask_gesture = @import("slider.zig").nextGesture();
-        }
+        const dx = x - at_screen[0];
+        const dy = y - at_screen[1];
+        if (@abs(dx) >= grab or @abs(dy) >= grab or dx * dx + dy * dy >= best_distance) continue;
+        best = h;
+        best_distance = dx * dx + dy * dy;
     }
+    return best;
 }
 
 fn dragMask(c: *Canvas, dx: f64, dy: f64) void {
@@ -653,9 +739,16 @@ fn dragCrop(c: *Canvas, dx: f64, dy: f64) void {
     if (c.on_crop) |f| f(r, c.crop_gesture);
 }
 
-fn onDragUpdate(_: *anyopaque, dx: f64, dy: f64, ctx: ?*anyopaque) callconv(.c) void {
+pub fn onDragUpdate(_: *anyopaque, dx: f64, dy: f64, ctx: ?*anyopaque) callconv(.c) void {
     const c: *Canvas = @ptrCast(@alignCast(ctx));
     if (!c.ready()) return;
+    if (c.drag == .none) return;
+    if (c.drag == .pick) {
+        // Zoomed in, a click still picks and a drag still moves the photo.
+        if (c.zoom <= 1.001 or dx * dx + dy * dy < 16) return;
+        c.drag = .pan;
+        c.updateCursor();
+    }
     if (c.drag == .mask) return c.dragMask(dx, dy);
     if (c.drag == .split) {
         const l = c.layout(c.zoom, c.centre);
@@ -721,8 +814,5 @@ fn drawOverlay(_: *anyopaque, cr: *gtk.Cairo, _: c_int, _: c_int, ctx: ?*anyopaq
 /// "Fit", or how big a photo pixel is on the screen.
 pub fn zoomText(c: *const Canvas, buf: []u8) [:0]const u8 {
     if (c.zoom <= 1.001 or !c.ready()) return "Fit";
-    const fit = c.layout(1, .{ 0.5, 0.5 });
-    const scale: f64 = @floatFromInt(gtk.gtk_widget_get_scale_factor(c.area));
-    const actual = c.full_width * c.recipe.crop.rect[2] / (fit.image[0] * scale);
-    return std.fmt.bufPrintZ(buf, "{d:.0}%", .{c.zoom / actual * 100}) catch "Fit";
+    return std.fmt.bufPrintZ(buf, "{d:.0}%", .{c.zoom / c.actualSize() * 100}) catch "Fit";
 }

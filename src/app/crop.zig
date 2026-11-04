@@ -20,6 +20,31 @@ pub fn fitAspect(rect: Rect, ratio: f64, photo: [2]f64) Rect {
     return .{ std.math.clamp(cx - w / 2, 0, 1 - w), std.math.clamp(cy - h / 2, 0, 1 - h), w, h };
 }
 
+pub const Spot = union(enum) { frame, corner: Corner };
+
+/// What a press at this place on the widget takes hold of: a corner, the frame, or nothing. `box` is
+/// the photo on the widget (x, y, width, height).
+pub fn spotAt(r: Rect, box: [4]f64, x: f64, y: f64, grab: f64) ?Spot {
+    const left = box[0] + r[0] * box[2];
+    const top = box[1] + r[1] * box[3];
+    const right = left + r[2] * box[2];
+    const bottom = top + r[3] * box[3];
+    const near = struct {
+        fn f(a: f64, b: f64, limit: f64) bool {
+            return @abs(a - b) < limit;
+        }
+    }.f;
+    if (near(y, top, grab)) {
+        if (near(x, left, grab)) return .{ .corner = .nw };
+        if (near(x, right, grab)) return .{ .corner = .ne };
+    }
+    if (near(y, bottom, grab)) {
+        if (near(x, left, grab)) return .{ .corner = .sw };
+        if (near(x, right, grab)) return .{ .corner = .se };
+    }
+    return if (x > left and x < right and y > top and y < bottom) .frame else null;
+}
+
 pub fn moved(r: Rect, dx: f64, dy: f64) Rect {
     return .{ std.math.clamp(r[0] + dx, 0, 1 - r[2]), std.math.clamp(r[1] + dy, 0, 1 - r[3]), r[2], r[3] };
 }
@@ -150,4 +175,13 @@ test "resizing keeps the opposite corner, and the ratio when there is one" {
     const held = resized(.{ 0.2, 0.2, 0.4, 0.4 }, .nw, -0.1, 0, 1.5, .{ 3, 2 });
     try testing.expectApproxEqAbs(0.6, held[0] + held[2], 1e-9);
     try testing.expectApproxEqAbs(held[2], held[3], 1e-9);
+}
+
+test "a press takes hold of the crop's corner, its frame, or nothing" {
+    const r: Rect = .{ 0.25, 0.25, 0.5, 0.5 };
+    const box = [4]f64{ 10, 10, 400, 200 };
+    try std.testing.expectEqual(Corner.nw, spotAt(r, box, 112, 58, 14).?.corner);
+    try std.testing.expectEqual(Corner.se, spotAt(r, box, 308, 162, 14).?.corner);
+    try std.testing.expect(spotAt(r, box, 200, 100, 14).? == .frame);
+    try std.testing.expectEqual(null, spotAt(r, box, 20, 20, 14));
 }

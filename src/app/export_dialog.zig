@@ -148,7 +148,18 @@ pub fn open(d: *Dialog, rels: []const []const u8) void {
     gtk.gtk_box_append(foot, d.go);
     gtk.gtk_box_append(box, foot);
     d.refresh();
+    // Escape closes it; Enter exports.
+    const keys = gtk.gtk_event_controller_key_new();
+    connect(keys, "key-pressed", &onKey, d);
+    gtk.gtk_widget_add_controller(w, keys);
+    gtk.gtk_window_set_focus(w, d.go);
     gtk.gtk_window_present(w);
+}
+
+fn onKey(_: *anyopaque, key: c_uint, _: c_uint, _: c_uint, ctx: ?*anyopaque) callconv(.c) c_int {
+    if (key != gtk.key_escape) return 0;
+    onCancel(undefined, ctx);
+    return 1;
 }
 
 fn onChanged(_: *anyopaque, ctx: ?*anyopaque) callconv(.c) void {
@@ -246,4 +257,6 @@ pub fn finished(d: *Dialog, folder: []const u8, results: []const Exporter.Result
     gtk.gtk_label_set_text(d.progress, text catch "Done.");
     gtk.gtk_button_set_label(d.cancel, "Done");
     gtk.gtk_widget_set_sensitive(d.cancel, 1);
+    // Enter closes it now.
+    gtk.gtk_window_set_focus(d.window.?, d.cancel);
 }

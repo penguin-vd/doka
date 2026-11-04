@@ -44,11 +44,16 @@ its colour work into a new look (`bake_look`). If the app wasn't open, open it a
 | --- | --- |
 | ← → | Previous / next photo |
 | hold `\` | See the original |
+| double-click the photo | 100% there, and back |
+| ↑ ↓, with Shift ten steps | Nudge the slider you clicked |
+| wheel over a slider's track, with Ctrl one step | Move it |
+| Escape | Stop clicking a subject, back to the whole photo |
+| Delete | Remove the picked mask |
 | Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y | Undo, redo |
 | Ctrl+E | Export |
 | Ctrl+O | Open folder |
 | Ctrl/Shift-click a thumbnail | Pick several for export |
-| double-click a slider | Reset it |
+| double-click a slider or its name | Reset it |
 
 ## Credits
 

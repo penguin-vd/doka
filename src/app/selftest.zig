@@ -11,6 +11,9 @@ const cropping = @import("crop.zig");
 const App = @import("app.zig");
 const Canvas = @import("canvas.zig");
 const MasksPanel = @import("masks_panel.zig");
+const Slider = @import("slider.zig");
+const Library = @import("library.zig");
+const Looks = @import("looks.zig");
 const Subject = @import("subject.zig");
 const Pool = @import("jobs.zig");
 const Mcp = @import("mcp.zig");
@@ -167,6 +170,9 @@ const tests = .{
     .{ "clicking a person in a real photo finds them and not the whole photo", subjectFinds },
     .{ "clicking on the photo and Claude's mask_subject both make a saved mask, off the main loop", subjectEndToEnd },
     .{ "the layers panel adds, edits, moves, follows undo and removes masks", maskPanel },
+    .{ "a shader that doesn't compile is tried once and says why, until it's fixed", brokenShader },
+    .{ "the keys and a limit's drag do what they say on the layers", maskKeys },
+    .{ "a press on the photo takes hold of the right thing, with the pointer to match", canvasPresses },
     .{ "an export through the pipeline keeps camera, lens, date and exposure, and the original is untouched", exportKeepsMetadata },
 };
 
@@ -808,6 +814,255 @@ fn maskPanel(c: Ctx) !void {
     r = try app.recipe(a);
     try expect(r.masks.len == 0 and p.selected == null, "not removed", .{});
     app.flush();
+}
+
+fn brokenShader(c: Ctx) !void {
+    const io = c.io;
+    const dir = try std.fmt.allocPrint(c.arena, "/tmp/doka-probe-shaders-{d}", .{std.c.getpid()});
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    var library = try Library.init(gpa, io, dir);
+    var looks: Looks = .{ .gpa = gpa, .library = &library };
+    defer looks.clear();
+    defer c.p.dropShaders();
+    try library.saveShader(c.arena, "probe-broken", "this isn't GLSL", "{}", 0);
+    const r = c.recipe("{\"shaders\":[{\"name\":\"probe-broken\"}]}");
+    looks.prepare(c.p, r);
+    try expect(looks.shaderError("probe-broken") != null and looks.broken_changed, "no error kept", .{});
+    try expect(looks.shaderError("probe-broken").?.len > 0 and !c.p.hasShader("probe-broken"), "its message is empty, or it's installed", .{});
+    // Not tried again: the panel isn't told again, and the message stays the first one's.
+    looks.broken_changed = false;
+    looks.prepare(c.p, r);
+    try expect(!looks.broken_changed, "tried again", .{});
+    // A photo with it still draws, without it.
+    _ = try c.run(1, 1, try grey(c.arena, &.{0.2}), "{\"shaders\":[{\"name\":\"probe-broken\"}]}", null);
+
+    const good = Library.starters[0];
+    try library.saveShader(c.arena, "probe-broken", good.glsl, good.json, 1);
+    looks.clear();
+    looks.prepare(c.p, r);
+    try expect(looks.shaderError("probe-broken") == null and c.p.hasShader("probe-broken"), "fixing it didn't help: {s}", .{Pipeline.last_error});
+}
+
+fn maskKeys(c: Ctx) !void {
+    const io = c.io;
+    const photo = std.Io.Dir.cwd().readFileAlloc(io, "testdata/photos/P8120024.JPG", gpa, .limited(64 << 20)) catch return;
+    defer gpa.free(photo);
+    const folder = try std.fmt.allocPrintSentinel(c.arena, "/tmp/doka-probe-keys-{d}", .{std.c.getpid()}, 0);
+    try std.Io.Dir.cwd().createDirPath(io, folder);
+    defer std.Io.Dir.cwd().deleteTree(io, folder) catch {};
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fmt.allocPrint(c.arena, "{s}/a.jpg", .{folder}), .data = photo });
+    var app: App = .{ .gpa = gpa, .io = io };
+    defer app.closeFolder();
+    try app.openFolder(folder);
+    var canvas: Canvas = .{ .gpa = gpa, .photos = undefined, .looks = undefined };
+    _ = canvas.create();
+    var p: MasksPanel = .{ .gpa = gpa, .app = &app, .canvas = &canvas, .edited = panelEdited, .layer_changed = panelSync };
+    panel_under_test = &p;
+    app_under_test = &app;
+    p.create();
+    panelSync();
+    const a = c.arena;
+    try expect(!p.deleteKey() and !p.escapeKey(), "the keys did something with no mask picked", .{});
+
+    gtk.g_signal_emit_by_name(p.add_buttons[2], "clicked");
+    // The red shows only while a limit is being dragged; a second press there puts it back.
+    Slider.onBegin(undefined, 50, 0, p.feather);
+    try expect(canvas.show_mask == 0, "no red while dragging", .{});
+    Slider.onEnd(undefined, 0, 0, p.feather);
+    try expect(canvas.show_mask == null, "red after the drag", .{});
+    try expect((try app.recipe(a)).masks[0].feather == 100, "feather {d}", .{(try app.recipe(a)).masks[0].feather});
+    Slider.onBegin(undefined, 50, 0, p.feather);
+    Slider.onEnd(undefined, 0, 0, p.feather);
+    try expect((try app.recipe(a)).masks[0].feather == 50, "double-click left {d}", .{(try app.recipe(a)).masks[0].feather});
+
+    // The wheel on a limit: the red shows, and goes when the wheel stops.
+    const wheel = gtk.gtk_event_controller_scroll_new(gtk.scroll_vertical);
+    try expect(Slider.onScroll(wheel, 0, -1, p.feather) == 1, "the wheel wasn't taken", .{});
+    try expect((try app.recipe(a)).masks[0].feather == 51 and canvas.show_mask == 0, "after a notch: {d}, red {any}", .{ (try app.recipe(a)).masks[0].feather, canvas.show_mask });
+    const started = gtk.g_get_monotonic_time();
+    while (canvas.show_mask != null and gtk.g_get_monotonic_time() - started < 2_000_000) _ = gtk.g_main_context_iteration(null, 0);
+    try expect(canvas.show_mask == null, "the red stayed after the wheel stopped", .{});
+
+    // The eye changes the row without making the list again.
+    const row = p.rows[0].name;
+    gtk.g_signal_emit_by_name(p.rows[0].eye, "clicked");
+    try expect(!(try app.recipe(a)).masks[0].enabled and p.rows[0].name == row, "the eye rebuilt the list", .{});
+
+    p.setActive(false);
+    try expect(!p.deleteKey(), "Delete worked from another tab", .{});
+    p.setActive(true);
+    try expect(p.deleteKey() and (try app.recipe(a)).masks.len == 0, "Delete left it", .{});
+    _ = try app.undo();
+    panelSync();
+    try expect((try app.recipe(a)).masks.len == 1, "undo didn't bring it back", .{});
+
+    p.selected = 0;
+    panelSync();
+    try expect(p.escapeKey() and p.selected == null and canvas.active_mask == null, "Escape stayed on the mask", .{});
+
+    // A subject that never found anything leaves no layer behind.
+    gtk.g_signal_emit_by_name(p.add_buttons[0], "clicked");
+    try expect(canvas.picking and canvas.show_mask == 1, "not picking", .{});
+    try expect(p.escapeKey(), "Escape ignored", .{});
+    try expect(!canvas.picking and canvas.show_mask == null and p.selected == null, "still picking", .{});
+    try expect((try app.recipe(a)).masks.len == 1, "an empty subject stayed", .{});
+    app.flush();
+}
+
+var picks: u32 = 0;
+var last_pick: [2]f32 = undefined;
+var last_keep = false;
+var placed: ?Recipe.Mask.Place = null;
+var cropped: ?cropping.Rect = null;
+
+fn onTestPick(_: *anyopaque, at: [2]f32, keep: bool) void {
+    picks += 1;
+    last_pick = at;
+    last_keep = keep;
+}
+
+fn onTestPlace(_: *anyopaque, _: usize, place: Recipe.Mask.Place, _: u64) void {
+    placed = place;
+}
+
+fn onTestCrop(rect: cropping.Rect, _: u64) void {
+    cropped = rect;
+}
+
+fn pointerIs(canvas: *const Canvas, name: ?[]const u8) bool {
+    const now = canvas.cursor_name orelse return name == null;
+    return name != null and std.mem.eql(u8, std.mem.span(now), name.?);
+}
+
+// A real canvas at a known size: 4:3 in 1040x840 puts the photo at 20,45, 1000x750.
+fn canvasPresses(c: Ctx) !void {
+    _ = try c.run(4, 3, try grey(c.arena, &(.{0.2} ** 12)), "{}", null);
+    var canvas: Canvas = .{ .gpa = gpa, .photos = undefined, .looks = undefined };
+    const widget = canvas.create();
+    canvas.pipeline = c.p.*;
+    canvas.rel = try gpa.dupe(u8, "a.jpg");
+    defer gpa.free(canvas.rel.?);
+    canvas.full_width = 4000;
+    canvas.on_pick = .{ .ctx = &canvas, .f = onTestPick };
+    canvas.on_mask = .{ .ctx = &canvas, .f = onTestPlace };
+    canvas.on_crop = onTestCrop;
+    gtk.gtk_widget_measure(widget, gtk.horizontal, -1, null, null, null, null);
+    gtk.gtk_widget_measure(widget, gtk.vertical, 1040, null, null, null, null);
+    gtk.gtk_widget_allocate(widget, 1040, 840, -1, null);
+    try expect(gtk.gtk_widget_get_width(canvas.area) == 1040, "not allocated: {d}", .{gtk.gtk_widget_get_width(canvas.area)});
+    const self: *anyopaque = &canvas;
+    const press = gtk.gtk_gesture_drag_new();
+    const begin = struct {
+        fn f(g: *anyopaque, x: f64, y: f64, ctx: *anyopaque) void {
+            Canvas.onDragBegin(g, x, y, ctx);
+        }
+    }.f;
+
+    // Double-click: to 100% and back, and only with two presses.
+    Canvas.onMotion(undefined, 520, 420, self);
+    try expect(canvas.spotAt(520, 420) == .pan and pointerIs(&canvas, null), "at fit", .{});
+    Canvas.onPressed(undefined, 1, 520, 420, self);
+    try expect(canvas.goal == 1, "one press zoomed", .{});
+    Canvas.onPressed(undefined, 2, 520, 420, self);
+    try expect(canvas.goal > 1.5, "double-click didn't zoom: {d}", .{canvas.goal});
+    Canvas.onPressed(undefined, 2, 520, 420, self);
+    try expect(canvas.goal == 1, "double-click didn't come back: {d}", .{canvas.goal});
+
+    // Zoomed: a hand to grab with, and the photo moves.
+    canvas.zoom = 3;
+    canvas.goal = 3;
+    Canvas.onMotion(undefined, 520, 420, self);
+    try expect(pointerIs(&canvas, "grab"), "no grab", .{});
+    const was = canvas.centre[0];
+    begin(press, 520, 420, self);
+    try expect(pointerIs(&canvas, "grabbing"), "no grabbing", .{});
+    Canvas.onDragUpdate(undefined, -100, 0, self);
+    try expect(canvas.centre[0] > was, "didn't move", .{});
+    Canvas.onDragEnd(undefined, 0, 0, self);
+    try expect(pointerIs(&canvas, "grab"), "still grabbing", .{});
+    canvas.zoom = 1;
+    canvas.goal = 1;
+    canvas.centre = .{ 0.5, 0.5 };
+
+    // Clicking a subject: a click picks, a drag at fit still picks where it was pressed, a drag
+    // zoomed in moves the photo; off the photo nothing.
+    canvas.setPicking(true);
+    Canvas.onMotion(undefined, 520, 420, self);
+    try expect(canvas.spotAt(520, 420) == .pick and canvas.spotAt(5, 5) == .none and pointerIs(&canvas, "crosshair"), "picking's spots", .{});
+    begin(press, 520, 420, self);
+    try expect(picks == 0, "picked before the release", .{});
+    Canvas.onDragEnd(undefined, 0, 0, self);
+    try expect(picks == 1 and @abs(last_pick[0] - 0.5) < 0.01 and @abs(last_pick[1] - 0.5) < 0.01 and last_keep, "picked {any}", .{last_pick});
+    begin(press, 270, 420, self);
+    Canvas.onDragUpdate(undefined, 40, 0, self);
+    Canvas.onDragEnd(undefined, 0, 0, self);
+    try expect(picks == 2 and @abs(last_pick[0] - 0.25) < 0.01, "a sloppy click picked {any}", .{last_pick});
+    canvas.zoom = 3;
+    canvas.goal = 3;
+    const before_pan = canvas.centre[0];
+    begin(press, 520, 420, self);
+    Canvas.onDragUpdate(undefined, -60, 0, self);
+    Canvas.onDragEnd(undefined, 0, 0, self);
+    try expect(picks == 2 and canvas.centre[0] > before_pan, "a drag picked, or didn't move", .{});
+    begin(press, 520, 420, self);
+    Canvas.onDragUpdate(undefined, 2, 0, self);
+    Canvas.onDragEnd(undefined, 0, 0, self);
+    try expect(picks == 3, "a click while zoomed didn't pick", .{});
+    canvas.zoom = 1;
+    canvas.goal = 1;
+    canvas.centre = .{ 0.5, 0.5 };
+    begin(press, 5, 5, self);
+    Canvas.onDragEnd(undefined, 0, 0, self);
+    try expect(picks == 3, "picked off the photo", .{});
+    Canvas.onPressed(undefined, 2, 520, 420, self);
+    try expect(canvas.goal == 1, "double-clicks zoom while picking", .{});
+    canvas.setPicking(false);
+
+    // A mask's handles: grabbed, dragged, and the nearest when they're close; no zoom on them.
+    canvas.recipe = c.recipe("{\"masks\":[{\"shape\":\"linear\",\"from\":[0.5,0],\"to\":[0.5,0.5]}]}");
+    canvas.active_mask = 0;
+    Canvas.onMotion(undefined, 520, 420, self);
+    try expect(canvas.spotAt(520, 420) == .mask and pointerIs(&canvas, "grab"), "the handle isn't there", .{});
+    Canvas.onPressed(undefined, 2, 520, 420, self);
+    try expect(canvas.goal == 1, "a double-click on a handle zoomed", .{});
+    begin(press, 520, 420, self);
+    try expect(pointerIs(&canvas, "grabbing"), "handle: no grabbing", .{});
+    Canvas.onDragUpdate(undefined, 0, 75, self);
+    Canvas.onDragEnd(undefined, 0, 0, self);
+    try expect(placed != null and @abs(placed.?.to[1] - 0.6) < 0.01 and placed.?.from[1] == 0, "moved to {any}", .{placed});
+    canvas.recipe = c.recipe("{\"masks\":[{\"shape\":\"linear\",\"from\":[0.5,0.5],\"to\":[0.5,0.52]}]}");
+    begin(press, 520, 422, self);
+    Canvas.onDragEnd(undefined, 0, 0, self);
+    try expect(canvas.mask_handle == .from, "grabbed {t}", .{canvas.mask_handle});
+    begin(press, 520, 434, self);
+    Canvas.onDragEnd(undefined, 0, 0, self);
+    try expect(canvas.mask_handle == .to, "grabbed {t}", .{canvas.mask_handle});
+    canvas.active_mask = null;
+
+    // The before/after line.
+    canvas.compare = true;
+    Canvas.onMotion(undefined, 520, 420, self);
+    try expect(canvas.spotAt(520, 420) == .split and pointerIs(&canvas, "ew-resize"), "the line isn't there", .{});
+    begin(press, 520, 420, self);
+    Canvas.onDragUpdate(undefined, 100, 0, self);
+    Canvas.onDragEnd(undefined, 0, 0, self);
+    try expect(@abs(canvas.split - 0.6) < 0.001, "split {d}", .{canvas.split});
+    canvas.compare = false;
+
+    // The crop: its corners, its frame, and no zoom.
+    canvas.recipe = c.recipe("{\"crop\":{\"rect\":[0.25,0.25,0.5,0.5]}}");
+    canvas.setCropMode(true);
+    Canvas.onMotion(undefined, 520, 420, self);
+    try expect(canvas.spotAt(520, 420) == .crop_move and pointerIs(&canvas, "move"), "the frame isn't there", .{});
+    try expect(canvas.spotAt(270, 232.5) == .nw and canvas.spotAt(770, 607.5) == .se and canvas.spotAt(30, 60) == .none, "the corners aren't there", .{});
+    Canvas.onMotion(undefined, 270, 232.5, self);
+    try expect(pointerIs(&canvas, "nwse-resize"), "corner's pointer", .{});
+    Canvas.onPressed(undefined, 2, 520, 420, self);
+    try expect(canvas.goal == 1, "a double-click zoomed the crop", .{});
+    begin(press, 520, 420, self);
+    Canvas.onDragUpdate(undefined, 100, 0, self);
+    Canvas.onDragEnd(undefined, 0, 0, self);
+    try expect(cropped != null and @abs(cropped.?[0] - 0.35) < 0.001, "crop {any}", .{cropped});
 }
 
 // Needs testdata/photos; skipped without it, as photo-core's tests are.

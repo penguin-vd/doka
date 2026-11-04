@@ -25,12 +25,15 @@ selected: ?usize = null,
 // Only the Adjust tab edits layers.
 active: bool = true,
 showing: bool = false,
+// A slider that limits the mask is being dragged: the red shows while it is.
+holding: bool = false,
 updating: bool = false,
 // Clicking a subject: the points so far, newest request first to be answered.
 picking: bool = false,
 points: std.ArrayList([3]f32) = .empty,
 asked: u64 = 0,
 waiting: bool = false,
+failed: bool = false,
 list_shape: u64 = 0,
 band: usize = 0,
 rows: [Recipe.max_masks]Row = undefined,
@@ -45,6 +48,9 @@ pick_box: *anyopaque = undefined,
 pick_button: *anyopaque = undefined,
 pick_status: *anyopaque = undefined,
 detail: *anyopaque = undefined,
+limits: *anyopaque = undefined,
+// The mask the limits were last opened or closed for.
+limits_for: ?usize = null,
 show_button: *anyopaque = undefined,
 invert_button: *anyopaque = undefined,
 feather: *Slider = undefined,
@@ -59,9 +65,10 @@ light: *Slider = undefined,
 
 const add_hint = "Click the subject. Shift-click what doesn't belong.";
 const wait_hint = "Finding it\u{2026}";
+const failed_hint = "Couldn't find it. Try another spot.";
 const missing_hint = "Needs its download: run scripts/subject-model.py, then restart Doka.";
 
-const Row = struct { panel: *Panel, index: usize, name: *anyopaque = undefined };
+const Row = struct { panel: *Panel, index: usize, name: *anyopaque = undefined, eye: *anyopaque = undefined };
 
 const band_labels = [_][:0]const u8{ "Reds", "Oranges", "Yellows", "Greens", "Blues", "Purples" };
 
@@ -121,8 +128,8 @@ pub fn create(p: *Panel) void {
     gtk.gtk_box_append(layers, p.whole_button);
     p.list = gtk.gtk_box_new(gtk.vertical, 2);
     gtk.gtk_box_append(layers, p.list);
-    gtk.gtk_box_append(box, layers);
 
+    // Above the list: they stay put as it grows.
     const adders = gtk.gtk_flow_box_new();
     gtk.gtk_flow_box_set_homogeneous(adders, 1);
     gtk.gtk_flow_box_set_min_children_per_line(adders, 2);
@@ -144,6 +151,7 @@ pub fn create(p: *Panel) void {
     connect(p.add_buttons[2], "clicked", &onAddRadial, p);
     connect(p.add_buttons[3], "clicked", &onAddRange, p);
     gtk.gtk_box_append(box, adders);
+    gtk.gtk_box_append(box, layers);
 
     p.detail = gtk.gtk_box_new(gtk.vertical, 8);
     gtk.gtk_widget_add_css_class(p.detail, "mask-detail");
@@ -174,14 +182,16 @@ pub fn create(p: *Panel) void {
     gtk.gtk_widget_add_css_class(p.pick_status, "faint");
     gtk.gtk_box_append(p.pick_box, p.pick_status);
     gtk.gtk_box_append(p.detail, p.pick_box);
-    p.feather = p.slider(p.detail, .{ .label = "Feather", .min = 0, .max = 100, .reset = 50, .unit = .plain, .on_change = onFeather });
+    p.feather = p.slider(p.detail, .{ .label = "Feather", .min = 0, .max = 100, .reset = 50, .unit = .plain, .on_change = onFeather, .on_hold = onLimitHold });
     p.blur = p.slider(p.detail, .{ .label = "Blur", .min = 0, .max = 100, .unit = .plain, .on_change = onBlur });
-    p.lowest = p.slider(p.detail, .{ .label = "Darkest tone", .min = 0, .max = 100, .unit = .plain, .on_change = onLowest });
-    p.highest = p.slider(p.detail, .{ .label = "Brightest tone", .min = 0, .max = 100, .reset = 100, .unit = .plain, .on_change = onHighest });
+    // Folded away unless it's what the mask is made of: the Light sliders stay near the top.
+    const limited = gtk.gtk_box_new(gtk.vertical, 8);
+    p.lowest = p.slider(limited, .{ .label = "Darkest tone", .min = 0, .max = 100, .unit = .plain, .on_change = onLowest, .on_hold = onLimitHold });
+    p.highest = p.slider(limited, .{ .label = "Brightest tone", .min = 0, .max = 100, .reset = 100, .unit = .plain, .on_change = onHighest, .on_hold = onLimitHold });
     const limit = gtk.gtk_label_new("Only this colour");
     gtk.gtk_label_set_xalign(limit, 0);
     gtk.gtk_widget_add_css_class(limit, "slider-label");
-    gtk.gtk_box_append(p.detail, limit);
+    gtk.gtk_box_append(limited, limit);
     const hues = flowOfThree();
     for (&p.hue_buttons, hue_choices, 0..) |*b, choice, i| {
         b.* = gtk.gtk_toggle_button_new_with_label(choice.label);
@@ -190,7 +200,12 @@ pub fn create(p: *Panel) void {
     }
     gtk.gtk_toggle_button_set_active(p.hue_buttons[0], 1);
     for (p.hue_buttons) |b| connect(b, "toggled", &onHueLimit, p);
-    gtk.gtk_box_append(p.detail, hues);
+    gtk.gtk_box_append(limited, hues);
+    p.limits = gtk.gtk_expander_new("Limit to tones and colours");
+    gtk.gtk_widget_add_css_class(p.limits, "slider-label");
+    gtk.gtk_widget_set_margin_top(limited, 8);
+    gtk.gtk_expander_set_child(p.limits, limited);
+    gtk.gtk_box_append(p.detail, p.limits);
     gtk.gtk_box_append(box, p.detail);
     p.widget = box;
 
@@ -238,13 +253,17 @@ pub fn layer(p: *const Panel, r: Recipe) ?Mask {
 /// A new photo: back to the whole of it.
 pub fn reset(p: *Panel) void {
     p.selected = null;
+    p.limits_for = null;
     p.showing = false;
     p.stopPicking();
 }
 
 fn stopPicking(p: *Panel) void {
+    // The red came on for the picking.
+    if (p.picking) p.showing = false;
     p.picking = false;
     p.waiting = false;
+    p.failed = false;
     // A late answer for what's no longer asked is dropped.
     p.asked += 1;
     p.points.clearRetainingCapacity();
@@ -260,7 +279,7 @@ pub fn setActive(p: *Panel, active: bool) void {
 fn pushToCanvas(p: *Panel) void {
     const on = if (p.active) p.selected else null;
     p.canvas.active_mask = on;
-    p.canvas.show_mask = if (p.showing) on else null;
+    p.canvas.show_mask = if (p.showing or p.holding) on else null;
     p.canvas.redraw();
 }
 
@@ -274,7 +293,13 @@ pub fn sync(p: *Panel, r: Recipe) void {
     if (p.layer(r) == null or p.layer(r).?.shape != .subject) if (p.picking) p.stopPicking();
     p.syncList(r);
     setOn(p.whole_button, p.selected == null);
-    for (0..r.masks.len) |i| setOn(gtk.gtk_widget_get_parent(p.rows[i].name), p.selected == i);
+    for (r.masks, 0..) |mask, i| {
+        const row = &p.rows[i];
+        setOn(gtk.gtk_widget_get_parent(row.name), p.selected == i);
+        gtk.gtk_widget_set_opacity(row.name, if (mask.enabled) 1 else 0.5);
+        gtk.gtk_button_set_icon_name(row.eye, if (mask.enabled) "view-reveal-symbolic" else "view-conceal-symbolic");
+        gtk.gtk_widget_set_tooltip_text(row.eye, if (mask.enabled) "Switch this mask off" else "Switch this mask on");
+    }
     for (p.add_buttons) |b| gtk.gtk_widget_set_sensitive(b, @intFromBool(r.masks.len < Recipe.max_masks));
     if (!p.subjectReady()) {
         gtk.gtk_widget_set_sensitive(p.add_buttons[0], 0);
@@ -290,7 +315,12 @@ pub fn sync(p: *Panel, r: Recipe) void {
         gtk.gtk_widget_set_visible(p.pick_box, @intFromBool(mask.shape == .subject));
         gtk.gtk_toggle_button_set_active(p.pick_button, @intFromBool(p.picking));
         gtk.gtk_widget_set_sensitive(p.pick_button, @intFromBool(p.subjectReady()));
-        gtk.gtk_label_set_text(p.pick_status, if (!p.subjectReady()) missing_hint else if (p.waiting) wait_hint else add_hint);
+        gtk.gtk_label_set_text(p.pick_status, if (!p.subjectReady()) missing_hint else if (p.waiting) wait_hint else if (p.failed) failed_hint else add_hint);
+        if (p.limits_for != p.selected) {
+            p.limits_for = p.selected;
+            const limited = mask.brightness.min > 0 or mask.brightness.max < 100 or mask.hue.width > 0;
+            gtk.gtk_expander_set_expanded(p.limits, @intFromBool(mask.shape == .whole or limited));
+        }
         p.feather.set(mask.feather);
         p.blur.set(mask.blur);
         p.lowest.set(mask.brightness.min);
@@ -332,7 +362,7 @@ fn syncList(p: *Panel, r: Recipe) void {
     var h = std.hash.Wyhash.init(0);
     for (r.masks) |m| {
         h.update(m.name);
-        h.update(&.{ @intFromBool(m.enabled), 0xff });
+        h.update(&.{0xff});
     }
     const shape = h.final() +% r.masks.len;
     if (shape == p.list_shape) return;
@@ -344,12 +374,11 @@ fn syncList(p: *Panel, r: Recipe) void {
         const row = gtk.gtk_box_new(gtk.horizontal, 0);
         gtk.gtk_widget_add_css_class(row, "layer-row");
         const pick = layerButton(name);
-        if (!m.enabled) gtk.gtk_widget_set_opacity(pick, 0.5);
         connect(pick, "clicked", &onPick, &p.rows[i]);
         p.rows[i].name = pick;
-        const eye = gtk.gtk_button_new_from_icon_name(if (m.enabled) "view-reveal-symbolic" else "view-conceal-symbolic");
+        const eye = gtk.gtk_button_new_from_icon_name("view-reveal-symbolic");
         gtk.gtk_widget_add_css_class(eye, "icon");
-        gtk.gtk_widget_set_tooltip_text(eye, if (m.enabled) "Switch this mask off" else "Switch this mask on");
+        p.rows[i].eye = eye;
         connect(eye, "clicked", &onEye, &p.rows[i]);
         gtk.gtk_box_append(row, pick);
         gtk.gtk_box_append(row, eye);
@@ -438,12 +467,8 @@ fn add(p: *Panel, shape: Mask.Shape) void {
     const a = scratch.allocator();
     const r = p.app.recipe(a) catch return;
     if (r.masks.len >= Recipe.max_masks) return;
-    var same: usize = 1;
-    for (r.masks) |m| {
-        if (m.shape == shape) same += 1;
-    }
     var mask: Mask = .{ .shape = shape };
-    mask.name = if (same == 1) shapeName(shape) else std.fmt.allocPrint(a, "{s} {d}", .{ shapeName(shape), same }) catch shapeName(shape);
+    mask.name = freeName(a, r.masks, shapeName(shape)) catch shapeName(shape);
     // A true circle, whatever the photo's shape.
     if (p.canvas.pipeline) |*pipe| if (pipe.width > 0 and pipe.height > 0) {
         const w: f32 = @floatFromInt(pipe.width);
@@ -457,6 +482,28 @@ fn add(p: *Panel, shape: Mask.Shape) void {
     p.selected = r.masks.len;
     p.commit(a, masks, 0);
     p.resync();
+}
+
+// "Gradient", or "Gradient 2", whichever isn't taken: masks can be removed from the middle.
+fn freeName(a: std.mem.Allocator, masks: []const Mask, base: []const u8) ![]const u8 {
+    var number: usize = 1;
+    while (true) : (number += 1) {
+        const name = if (number == 1) base else try std.fmt.allocPrint(a, "{s} {d}", .{ base, number });
+        for (masks) |m| {
+            if (std.mem.eql(u8, m.name, name)) break;
+        } else return name;
+    }
+}
+
+test "a new mask's name is the first that's free" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectEqualStrings("Circle", try freeName(a, &.{}, "Circle"));
+    const after_removing_the_first = [_]Mask{.{ .name = "Gradient 2" }};
+    try std.testing.expectEqualStrings("Gradient", try freeName(a, &after_removing_the_first, "Gradient"));
+    const two = [_]Mask{ .{ .name = "Gradient" }, .{ .name = "Gradient 2" } };
+    try std.testing.expectEqualStrings("Gradient 3", try freeName(a, &two, "Gradient"));
 }
 
 fn onAddSubject(_: *anyopaque, ctx: *Panel) callconv(.c) void {
@@ -484,9 +531,12 @@ fn onPicked(ctx: *anyopaque, at: [2]f32, keep: bool) void {
     const path = std.fmt.allocPrint(a, "{s}/{s}", .{ f.path, rel }) catch return;
     p.asked += 1;
     p.waiting = true;
+    p.failed = false;
     subject.ask(.{ .path = path, .root = f.path, .rel = rel, .points = p.points.items, .ctx = p, .tag = p.asked, .done = onFound }) catch |err| {
         std.log.err("subject: {t}", .{err});
+        p.points.clearRetainingCapacity();
         p.waiting = false;
+        p.failed = true;
     };
     p.resync();
 }
@@ -498,6 +548,9 @@ fn onFound(ctx: *anyopaque, tag: u64, rel: []const u8, points: []const [3]f32, f
     defer p.resync();
     const name = file orelse {
         std.log.err("subject: {t}", .{failure.?});
+        // The point that failed isn't kept for the next try.
+        p.points.clearRetainingCapacity();
+        p.failed = true;
         return;
     };
     const current = p.app.currentRel() orelse return;
@@ -557,6 +610,34 @@ fn onEye(_: *anyopaque, row: *Row) callconv(.c) void {
 }
 
 fn onRemove(_: *anyopaque, p: *Panel) callconv(.c) void {
+    p.removeSelected();
+}
+
+/// Delete: the picked mask goes. Ctrl+Z brings it back.
+pub fn deleteKey(p: *Panel) bool {
+    if (!p.active or p.selected == null) return false;
+    p.removeSelected();
+    return true;
+}
+
+/// Escape: out of clicking a subject, then back to the whole photo. A subject that never found
+/// anything isn't left behind as an empty layer.
+pub fn escapeKey(p: *Panel) bool {
+    if (!p.active or p.selected == null) return false;
+    if (p.picking) {
+        var scratch: Scratch = .init(p.gpa);
+        defer scratch.deinit();
+        const empty = if (p.layer(p.app.recipe(scratch.allocator()) catch return false)) |m| m.file.len == 0 else false;
+        p.stopPicking();
+        if (empty) p.removeSelected() else p.resync();
+        return true;
+    }
+    p.selected = null;
+    p.resync();
+    return true;
+}
+
+fn removeSelected(p: *Panel) void {
     var scratch: Scratch = .init(p.gpa);
     defer scratch.deinit();
     const a = scratch.allocator();
@@ -589,6 +670,12 @@ fn onInvert(button: *anyopaque, p: *Panel) callconv(.c) void {
     p.commit(a, e.masks, 0);
 }
 
+fn onLimitHold(s: *Slider, held: bool) void {
+    const p = panelOf(s);
+    p.holding = held;
+    p.pushToCanvas();
+}
+
 fn onFeather(s: *Slider, v: f64, g: u64) void {
     const p = panelOf(s);
     var scratch: Scratch = .init(p.gpa);
@@ -618,9 +705,7 @@ fn onLowest(s: *Slider, v: f64, g: u64) void {
     e.mask.brightness.min = @floatCast(@min(v, e.mask.brightness.max));
     p.commit(a, e.masks, g);
     // Stopped at the other end: the same drag goes on.
-    const held = s.gesture;
     s.set(e.mask.brightness.min);
-    s.gesture = held;
 }
 
 fn onHighest(s: *Slider, v: f64, g: u64) void {
@@ -631,9 +716,7 @@ fn onHighest(s: *Slider, v: f64, g: u64) void {
     const e = p.editing(a) orelse return;
     e.mask.brightness.max = @floatCast(@max(v, e.mask.brightness.min));
     p.commit(a, e.masks, g);
-    const held = s.gesture;
     s.set(e.mask.brightness.max);
-    s.gesture = held;
 }
 
 fn onHueLimit(button: *anyopaque, p: *Panel) callconv(.c) void {

@@ -76,6 +76,19 @@ Changed for what someone would notice, a line under Decided for a choice whose r
   down to hair; more clicks add to it, Shift-clicks take away. Claude does the same with
   `mask_subject`. Optional: `scripts/subject-model.py` downloads ONNX Runtime and MobileSAM once
   (56 MB, 74 MB unpacked); without it everything else works and the button says what to run.
+- What the native window had lost is back: double-click a slider resets it for sure (the name too,
+  and one undo step), double-click the photo for 100% and back, the pointer shows what a press will
+  grab, "Original" while holding `\\`, the way in when no folder is open, Escape and Enter in the
+  export dialog, tooltips on thumbnails and shaders, and a shader that doesn't compile says so in its
+  row (and is tried once, not on every frame). Grabbing a slider's thumb no longer moves it.
+- ← → always switch photos, also just after clicking a look or a button. A clicked slider nudges
+  with ↑ ↓, Shift for ten steps.
+- The wheel over a slider's track moves it, Ctrl for one step at a time; a run of it undoes as one
+  step. A wheel already scrolling the panel keeps scrolling it, and the sliders' names scroll it.
+- Smoother masks: Escape leaves click-a-subject or the mask, Delete removes it; zoomed in, dragging
+  while clicking a subject moves the photo; the red shows while dragging Feather or a tone limit; the
+  limits fold away so the Light sliders stay near the top; a mask's eye no longer rebuilds the list;
+  grabbing takes the nearest handle; new masks don't repeat a name; a failed subject click says so.
 
 ### Decided
 

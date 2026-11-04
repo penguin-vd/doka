@@ -421,10 +421,13 @@ fn onBind(_: *anyopaque, item: *anyopaque, ctx: ?*anyopaque) callconv(.c) void {
             for (&ui.cells, indices) |*cell, index| {
                 cell.index = index;
                 if (index) |i| {
+                    var tip: [std.fs.max_path_bytes + 64]u8 = undefined;
+                    gtk.gtk_widget_set_tooltip_text(cell.frame, std.fmt.bufPrintZ(&tip, "{s}\nCtrl or Shift-click to pick several for export", .{f.photos[i].rel}) catch null);
                     gtk.gtk_widget_remove_css_class(cell.frame, "empty");
                     gtk.gtk_picture_set_paintable(cell.picture, s.photos.thumb(f.photos[i].rel));
                     s.paintCell(cell);
                 } else {
+                    gtk.gtk_widget_set_tooltip_text(cell.frame, null);
                     gtk.gtk_picture_set_paintable(cell.picture, null);
                     gtk.gtk_widget_set_opacity(cell.dot, 0);
                     gtk.gtk_widget_add_css_class(cell.frame, "empty");

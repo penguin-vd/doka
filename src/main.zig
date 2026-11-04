@@ -52,6 +52,11 @@ var claude_label: *anyopaque = undefined;
 var claude_timer: c_uint = 0;
 var exif_label: *anyopaque = undefined;
 var zoom_label: *anyopaque = undefined;
+var empty_state: *anyopaque = undefined;
+var empty_text: *anyopaque = undefined;
+var empty_button: *anyopaque = undefined;
+var original_badge: *anyopaque = undefined;
+var no_pipeline = false;
 var tab_stack: *anyopaque = undefined;
 var tab_buttons: [3]*anyopaque = undefined;
 const Tab = enum { adjust, looks, crop };
@@ -138,8 +143,8 @@ const css =
     \\entry:focus-within { border-color: #f4f4f4; outline: 0; }
     \\checkbutton check { background: #1c1c1c; border: 1px solid #4c4c4c; border-radius: 3px; box-shadow: none; }
     \\checkbutton check:checked { background: #f4f4f4; color: #161616; border-color: #f4f4f4; }
-    \\progressbar > trough { background: #1c1c1c; min-height: 2px; border-radius: 0; }
-    \\progressbar > trough > progress { background: #f4f4f4; min-height: 2px; border-radius: 0; }
+    \\progressbar > trough { background: #1c1c1c; background-image: none; border: 0; box-shadow: none; min-height: 2px; border-radius: 0; }
+    \\progressbar > trough > progress { background: #f4f4f4; background-image: none; border: 0; box-shadow: none; min-height: 2px; border-radius: 0; }
     \\scrollbar { background: transparent; border: 0; }
     \\scrollbar slider { min-width: 4px; min-height: 24px; margin: 2px; background: #4c4c4c; border: 0; border-radius: 3px; }
     \\scrollbar slider:hover { background: #636363; }
@@ -149,6 +154,7 @@ const css =
     \\.look:hover, .look:active { color: #ececec; background: transparent; }
     \\.look.on { color: #f4f4f4; outline: 2px solid #f4f4f4; outline-offset: -2px; background: transparent; }
     \\.look-name { font-size: 11px; }
+    \\.original-badge { margin: 12px; padding: 2px 8px; font-size: 12px; color: #ececec; background: rgba(0, 0, 0, 0.6); border-radius: 3px; }
     \\.mask-detail { margin-top: 8px; padding-top: 12px; border-top: 1px solid #363636; }
     \\button.layer { background: transparent; color: #b8b8b8; }
     \\button.layer:hover { background: #333333; color: #ececec; }
@@ -396,6 +402,7 @@ fn syncHeader() void {
         }
     }
     gtk.gtk_label_set_text(position_label, if (f != null and app.current != null) std.fmt.bufPrintZ(&buf3, "{d} / {d}", .{ position, total }) catch "" else "");
+    gtk.gtk_widget_set_visible(empty_state, @intFromBool(f == null or no_pipeline));
     gtk.gtk_widget_set_sensitive(export_button, @intFromBool(app.current != null));
     gtk.gtk_widget_set_sensitive(compare_button, @intFromBool(app.current != null));
     const s = app.currentSession();
@@ -580,7 +587,12 @@ fn onResetSliders(_: *anyopaque, _: ?*anyopaque) callconv(.c) void {
     edited();
 }
 
+// Keys of the whole window: first in line (capture phase), so a focused button or grid of looks
+// can't take the arrows away. Up and down are left for a focused slider, and an open menu keeps them all.
 fn onKey(_: *anyopaque, key: c_uint, _: c_uint, state: c_uint, _: ?*anyopaque) callconv(.c) c_int {
+    if (gtk.gtk_window_get_focus(window)) |focus| {
+        if (gtk.gtk_widget_get_ancestor(focus, gtk.gtk_popover_get_type()) != null) return 0;
+    }
     const ctrl = state & gtk.control_mask != 0;
     const shift = state & gtk.shift_mask != 0;
     if (ctrl) switch (key) {
@@ -588,15 +600,15 @@ fn onKey(_: *anyopaque, key: c_uint, _: c_uint, state: c_uint, _: ?*anyopaque) c
             if (shift) redoStep() else undoStep();
             return 1;
         },
-        'y' => {
+        'y', 'Y' => {
             redoStep();
             return 1;
         },
-        'o' => {
+        'o', 'O' => {
             chooseFolder();
             return 1;
         },
-        'e' => {
+        'e', 'E' => {
             openExport();
             return 1;
         },
@@ -605,20 +617,26 @@ fn onKey(_: *anyopaque, key: c_uint, _: c_uint, state: c_uint, _: ?*anyopaque) c
     switch (key) {
         gtk.key_left => stepPhoto(-1),
         gtk.key_right => stepPhoto(1),
-        '\\' => {
-            canvas.before = true;
-            canvas.redraw();
+        '\\' => setBefore(true),
+        gtk.key_escape => {
+            const had_focus = gtk.gtk_window_get_focus(window) != null;
+            gtk.gtk_window_set_focus(window, null);
+            return @intFromBool(masks_panel.escapeKey() or had_focus);
         },
+        gtk.key_delete => return @intFromBool(masks_panel.deleteKey()),
         else => return 0,
     }
     return 1;
 }
 
 fn onKeyUp(_: *anyopaque, key: c_uint, _: c_uint, _: c_uint, _: ?*anyopaque) callconv(.c) void {
-    if (key == '\\') {
-        canvas.before = false;
-        canvas.redraw();
-    }
+    if (key == '\\') setBefore(false);
+}
+
+fn setBefore(on: bool) void {
+    canvas.before = on;
+    gtk.gtk_widget_set_visible(original_badge, @intFromBool(on and app.current != null));
+    canvas.redraw();
 }
 
 fn iconButton(icon: [*:0]const u8, tip: [*:0]const u8, handler: anytype) *anyopaque {
@@ -705,6 +723,7 @@ fn buildAdjust() *anyopaque {
     const scrolled = gtk.gtk_scrolled_window_new();
     gtk.gtk_scrolled_window_set_policy(scrolled, 2, 1);
     gtk.gtk_scrolled_window_set_child(scrolled, panel);
+    Slider.watchPanel(scrolled);
     gtk.gtk_widget_set_vexpand(scrolled, 1);
     return scrolled;
 }
@@ -747,6 +766,34 @@ fn buildPanel() *anyopaque {
     return panel;
 }
 
+// Over the photo: the way in when there's no folder, and the word for what \\ shows.
+fn buildStageNotes() void {
+    empty_state = gtk.gtk_box_new(gtk.vertical, 10);
+    gtk.gtk_widget_set_halign(empty_state, gtk.align_center);
+    gtk.gtk_widget_set_valign(empty_state, gtk.align_center);
+    empty_text = gtk.gtk_label_new("Open a folder to start.");
+    empty_button = gtk.gtk_button_new_with_label("Open folder");
+    gtk.gtk_widget_set_halign(empty_button, gtk.align_center);
+    connect(empty_button, "clicked", &onOpenClicked, null);
+    gtk.gtk_box_append(empty_state, empty_text);
+    gtk.gtk_box_append(empty_state, empty_button);
+    gtk.gtk_overlay_add_overlay(canvas.widget, empty_state);
+    original_badge = gtk.gtk_label_new("Original");
+    gtk.gtk_widget_add_css_class(original_badge, "original-badge");
+    gtk.gtk_widget_set_halign(original_badge, gtk.align_start);
+    gtk.gtk_widget_set_valign(original_badge, gtk.align_start);
+    gtk.gtk_widget_set_can_target(original_badge, 0);
+    gtk.gtk_widget_set_visible(original_badge, 0);
+    gtk.gtk_overlay_add_overlay(canvas.widget, original_badge);
+}
+
+fn onCanvasFailed() void {
+    no_pipeline = true;
+    gtk.gtk_label_set_text(empty_text, "This needs OpenGL with float render targets, and it isn't available here.");
+    gtk.gtk_widget_set_visible(empty_button, 0);
+    gtk.gtk_widget_set_visible(empty_state, 1);
+}
+
 fn syncExif() void {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
@@ -771,6 +818,11 @@ fn onDrawn() void {
     var buf: [32]u8 = undefined;
     gtk.gtk_label_set_text(zoom_label, canvas.zoomText(&buf));
     looks_panel.maybeDrawPreviews();
+    if (looks.broken_changed) {
+        looks.broken_changed = false;
+        looks_panel.shader_shape = 0;
+        if (active_tab == .looks) looks_panel.update();
+    }
 }
 
 fn onCompare(button: *anyopaque, _: ?*anyopaque) callconv(.c) void {
@@ -1024,6 +1076,7 @@ fn onActivate(application: *anyopaque, _: ?*anyopaque) callconv(.c) void {
     const key = gtk.gtk_event_controller_key_new();
     connect(key, "key-pressed", &onKey, null);
     connect(key, "key-released", &onKeyUp, null);
+    gtk.gtk_event_controller_set_propagation_phase(key, gtk.phase_capture);
     gtk.gtk_widget_add_controller(window, key);
 
     const column = gtk.gtk_box_new(gtk.vertical, 0);
@@ -1037,13 +1090,14 @@ fn onActivate(application: *anyopaque, _: ?*anyopaque) callconv(.c) void {
     gtk.gtk_widget_add_css_class(stage, "stage");
     gtk.gtk_widget_set_hexpand(stage, 1);
     gtk.gtk_box_append(stage, canvas.create());
+    buildStageNotes();
     const footer = gtk.gtk_box_new(gtk.horizontal, 12);
     gtk.gtk_widget_add_css_class(footer, "footer");
     exif_label = gtk.gtk_label_new(null);
     gtk.gtk_label_set_xalign(exif_label, 0);
     gtk.gtk_widget_set_hexpand(exif_label, 1);
     zoom_label = gtk.gtk_label_new("Fit");
-    gtk.gtk_widget_set_tooltip_text(zoom_label, "Scroll to zoom, drag to move");
+    gtk.gtk_widget_set_tooltip_text(zoom_label, "Scroll to zoom, drag to move, double-click for 100%");
     gtk.gtk_box_append(footer, exif_label);
     gtk.gtk_box_append(footer, zoom_label);
     gtk.gtk_box_append(stage, footer);
@@ -1051,9 +1105,12 @@ fn onActivate(application: *anyopaque, _: ?*anyopaque) callconv(.c) void {
     gtk.gtk_box_append(row, buildPanel());
     canvas.on_drawn = onDrawn;
     canvas.on_installed = onInstalled;
+    canvas.on_failed = onCanvasFailed;
     canvas.on_crop = onCropDragged;
     sidebar.on_filter = syncHeader;
     export_dialog.parent = window;
+    // With no folder to open, the panels still follow "no photo".
+    syncControls();
     syncHeader();
     gtk.gtk_window_present(window);
 

@@ -204,7 +204,7 @@ Undo history is kept in memory for the session and works for edits from either s
 The UI follows the design canvas (see `design/`): folder sidebar, photo in the middle, tool panel on the right. Where the design and this spec differ, this spec wins.
 
 - **Folder browser:** Open folder (native dialog), thumbnail grid separated by subfolder and by the day taken (from EXIF), a dot on edited photos, filters for edited / not edited and by day. Remember the last folder. ← → switches photos, among those the filters show.
-- **Adjust:** Exposure, Contrast, Highlights, Shadows, Temperature, Tint, Saturation, Sharpen, Noise reduction. Double-click a slider to reset it. At the top, the layers: the whole photo and its masks. Pick a layer and the same sliders edit it; a mask adds its blur, its limits, its own colour mixer and handles on the photo. Sharpen and noise reduction are for the whole photo.
+- **Adjust:** Exposure, Contrast, Highlights, Shadows, Temperature, Tint, Saturation, Sharpen, Noise reduction. Double-click a slider to reset it; the wheel over its track moves it. At the top, the layers: the whole photo and its masks. Pick a layer and the same sliders edit it; a mask adds its blur, its limits, its own colour mixer and handles on the photo. Sharpen and noise reduction are for the whole photo.
 - **Looks:** a grid of looks (LUT files), each previewed on the current photo, plus Strength, Grain (amount, size) and Halation sliders. A collapsed Colour section holds the per-colour mixer, and a Shaders list below lets you add, reorder and toggle shaders.
 - **Crop:** aspect ratios (Original, 1:1, 4:5, 3:2, 16:9), drag handles, Straighten, Rotate 90°, Flip.
 - **Before / after:** hold `\` or click the toggle to see the original.

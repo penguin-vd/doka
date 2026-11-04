@@ -7,6 +7,7 @@ pub const TickFn = *const fn (widget: *anyopaque, clock: *anyopaque, ctx: ?*anyo
 pub const non_unique = 32;
 pub const horizontal = 0;
 pub const vertical = 1;
+pub const scroll_vertical = 1;
 pub const scroll_both = 3;
 pub const continue_ = 1;
 pub const remove = 0;
@@ -46,6 +47,8 @@ pub extern fn gtk_widget_add_tick_callback(widget: *anyopaque, f: TickFn, ctx: ?
 pub extern fn gtk_widget_remove_tick_callback(widget: *anyopaque, id: c_uint) void;
 pub extern fn gtk_widget_set_margin_start(widget: *anyopaque, m: c_int) void;
 pub extern fn gtk_widget_set_margin_end(widget: *anyopaque, m: c_int) void;
+pub extern fn gtk_widget_measure(widget: *anyopaque, orientation: c_int, for_size: c_int, minimum: ?*c_int, natural: ?*c_int, minimum_baseline: ?*c_int, natural_baseline: ?*c_int) void;
+pub extern fn gtk_widget_allocate(widget: *anyopaque, w: c_int, h: c_int, baseline: c_int, transform: ?*anyopaque) void;
 pub extern fn gtk_widget_set_margin_top(widget: *anyopaque, m: c_int) void;
 pub extern fn gtk_gl_area_new() *anyopaque;
 pub extern fn gtk_gl_area_get_context(area: *anyopaque) ?*anyopaque;
@@ -75,6 +78,10 @@ pub extern fn gdk_texture_new_from_bytes(bytes: *GBytes, err: ?*?*GError) ?*anyo
 // The window.
 pub const key_left = 0xff51;
 pub const key_right = 0xff53;
+pub const key_up = 0xff52;
+pub const key_down = 0xff54;
+pub const key_escape = 0xff1b;
+pub const key_delete = 0xffff;
 pub const control_mask = 4;
 pub const shift_mask = 1;
 pub const align_start = 1;
@@ -115,6 +122,12 @@ pub extern fn gtk_overlay_add_overlay(overlay: *anyopaque, child: *anyopaque) vo
 pub extern fn gtk_scale_set_draw_value(scale: *anyopaque, on: c_int) void;
 pub extern fn gtk_scale_add_mark(scale: *anyopaque, value: f64, position: c_int, markup: ?[*:0]const u8) void;
 pub extern fn gtk_event_controller_key_new() *anyopaque;
+pub extern fn gtk_event_controller_focus_new() *anyopaque;
+pub extern fn gtk_widget_has_focus(widget: *anyopaque) c_int;
+pub extern fn gtk_widget_get_ancestor(widget: *anyopaque, widget_type: usize) ?*anyopaque;
+pub extern fn gtk_popover_get_type() usize;
+pub extern fn gtk_window_get_focus(window: *anyopaque) ?*anyopaque;
+pub extern fn gtk_window_set_focus(window: *anyopaque, focus: ?*anyopaque) void;
 pub extern fn gtk_event_controller_set_propagation_phase(controller: *anyopaque, phase: c_int) void;
 pub extern fn gtk_gesture_click_new() *anyopaque;
 pub extern fn gtk_scrolled_window_new() *anyopaque;
@@ -203,6 +216,8 @@ pub extern fn gtk_event_controller_get_current_event_state(controller: *anyopaqu
 pub extern fn gdk_memory_texture_new(w: c_int, h: c_int, format: c_int, bytes: *GBytes, stride: usize) *anyopaque;
 pub const memory_rgba8 = 5;
 pub extern fn gtk_button_set_child(button: *anyopaque, child: ?*anyopaque) void;
+pub extern fn gtk_button_set_icon_name(button: *anyopaque, name: [*:0]const u8) void;
+pub extern fn gtk_expander_set_expanded(expander: *anyopaque, on: c_int) void;
 pub extern fn gtk_button_set_label(button: *anyopaque, label: [*:0]const u8) void;
 pub extern fn gtk_widget_set_opacity(widget: *anyopaque, opacity: f64) void;
 pub const policy_external = 3;
