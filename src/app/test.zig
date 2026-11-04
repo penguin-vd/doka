@@ -1,47 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
 
-const gpu = @import("gpu.zig");
-const ui = @import("ui.zig");
-
-test "a GPU report with float targets on the RTX passes" {
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena.deinit();
-    const r = try gpu.parse(arena.allocator(),
-        \\[{"webgl2":true,"renderer":"NVIDIA GeForce RTX 3080/PCIe/SSE2","float_render":true,
-        \\"float_readback":true,"half_float_render":true,"float_linear":true,"max_texture_size":32768,"extra":1}]
-    );
-    try testing.expect(r.ok());
-    try testing.expectEqual(32768, r.max_texture_size);
-}
-
-test "a GPU report fails without float targets or on a software renderer" {
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    try testing.expect(!(try gpu.parse(a, "[{\"webgl2\":true,\"renderer\":\"NVIDIA\",\"float_render\":false}]")).ok());
-    try testing.expect(!(try gpu.parse(a,
-        \\[{"webgl2":true,"renderer":"llvmpipe (LLVM 20.1, 256 bits)","float_render":true,"float_readback":true}]
-    )).ok());
-    try testing.expectError(error.BadReport, gpu.parse(a, "[]"));
-}
-
-test "app:// URIs find the page's files" {
-    try testing.expectEqualStrings("text/html", std.mem.span(ui.find(ui.start).?.mime));
-    try testing.expectEqualStrings("main.js", ui.find("app://ui/main.js?v=2").?.path);
-    try testing.expect(ui.find("app://ui/../secret") == null);
-    try testing.expect(ui.find("app://ui/photo/a.jpg") == null);
-    try testing.expect(ui.find("https://ui/index.html") == null);
-}
-
-test "percent-encoded paths decode, bad escapes don't" {
-    const d = (try ui.percentDecode(testing.allocator, "2024%20Japan/P1.JPG")).?;
-    defer testing.allocator.free(d);
-    try testing.expectEqualStrings("2024 Japan/P1.JPG", d);
-    try testing.expectEqual(null, try ui.percentDecode(testing.allocator, "bad%2"));
-    try testing.expectEqual(null, try ui.percentDecode(testing.allocator, "bad%zz"));
-}
-
 const Session = @import("session.zig");
 const folders = @import("folder.zig");
 
@@ -81,32 +40,22 @@ test "an edit after undo drops what could be redone" {
     try testing.expect(!s.canRedo());
 }
 
-test "Claude's changes undo together from the bar, and Keep clears the bar" {
+test "Claude's changes undo one at a time, like anyone's" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     var s = try Session.init(testing.allocator, .{});
     defer s.deinit();
     _ = try s.change(a, .{ .patch = try patch(a, "{\"edits\":{\"exposure\":0.3}}"), .now = 0 });
-    _ = try s.change(a, .{ .patch = try patch(a, "{\"look\":{\"name\":\"film.cube\",\"strength\":70}}"), .by = .claude, .now = 1, .note = "film look 70%" });
-    const r = try s.change(a, .{ .patch = try patch(a, "{\"grain\":{\"amount\":25}}"), .by = .claude, .now = 2, .note = "grain 25" });
+    _ = try s.change(a, .{ .patch = try patch(a, "{\"look\":{\"name\":\"film.cube\",\"strength\":70}}"), .by = .claude, .now = 1 });
+    const r = try s.change(a, .{ .patch = try patch(a, "{\"grain\":{\"amount\":25}}"), .by = .claude, .now = 2 });
     try testing.expectEqual(.claude, r.updatedBy);
-    try testing.expectEqualStrings("grain 25", s.claude_note.items);
-    try testing.expectEqual(2, s.claude_changes);
-    try testing.expect(try s.undoClaude());
+    try testing.expect(try s.undo());
     const back = try s.recipe(a);
-    try testing.expectEqual(0.3, back.edits.exposure);
-    try testing.expectEqualStrings("none", back.look.name);
-    try testing.expect(!s.claudePending());
-    // Redo brings Claude's version back.
+    try testing.expectEqual(0, back.grain.amount);
+    try testing.expectEqualStrings("film.cube", back.look.name);
     try testing.expect(try s.redo());
     try testing.expectEqual(25, (try s.recipe(a)).grain.amount);
-
-    _ = try s.change(a, .{ .patch = try patch(a, "{\"halation\":5}"), .by = .claude, .now = 3 });
-    s.keepClaude();
-    try testing.expect(!s.claudePending());
-    try testing.expect(!try s.undoClaude());
-    try testing.expectEqual(5, (try s.recipe(a)).halation);
 }
 
 test "a folder lists its JPEGs, subfolders included, hidden ones not" {
@@ -138,13 +87,6 @@ test "set_edits refuses a field the recipe doesn't have, at any depth" {
     try testing.expectError(error.UnknownField, tools.validate(Recipe, try patch(a, "{\"edits\":{\"bogus\":1}}")));
     try testing.expectError(error.UnknownField, tools.validate(Recipe, try patch(a, "{\"colour\":{\"teal\":{\"hue\":1}}}")));
     try testing.expectError(error.UnknownField, tools.validate(Recipe, try patch(a, "{\"shaders\":[{\"name\":\"x\",\"strenght\":1}]}")));
-}
-
-test "a change without a note is summed up in words" {
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    try testing.expectEqualStrings("exposure 0.3, grain amount 25", try tools.summarize(a, try patch(a, "{\"edits\":{\"exposure\":0.3},\"grain\":{\"amount\":25}}")));
 }
 
 test "MCP answers only its own host" {

@@ -5,7 +5,7 @@
 //! the ones scrolled past.
 const std = @import("std");
 const Io = std.Io;
-const c = @import("c.zig");
+const c = @import("gtk.zig");
 
 const Pool = @This();
 
@@ -17,7 +17,7 @@ pub const Task = struct {
 
 pub const Priority = enum { urgent, background };
 
-// One per core, a few kept for WebKit and the main loop.
+// One per core, a few kept for the main loop and the GPU driver.
 pub const max_workers = 16;
 
 io: Io,

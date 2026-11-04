@@ -1,6 +1,6 @@
 //! Claude's tools (SPEC.md, Claude Code integration), run on the main loop against the live app.
 //! A tool that changes the photo answers with the new view: what's open, the recipe, and a
-//! screenshot of the rendered photo that the page draws with the same pipeline.
+//! screenshot of the rendered photo drawn with the same pipeline.
 const std = @import("std");
 const Io = std.Io;
 const core = @import("photo-core");
@@ -8,7 +8,6 @@ const Recipe = core.Recipe;
 
 const App = @import("app.zig");
 const Mcp = @import("mcp.zig");
-const Window = @import("window.zig");
 const Library = @import("library.zig");
 
 const log = std.log.scoped(.tools);
@@ -21,8 +20,7 @@ pub const instructions =
     \\Doka is the photo editor open on this computer; these tools edit the photo on its screen, live.
     \\- Call get_view before editing: it shows the open photo, its current edits and a screenshot.
     \\- Make one change at a time with set_edits, then look at the screenshot it returns before the next.
-    \\- Say in set_edits' note, in a few words, what you changed ("Film look 70%, highlights −15"); the
-    \\  user sees it with Keep / Undo buttons, and can undo it.
+    \\- Your edits show on the user's screen as you make them; they undo them with Ctrl+Z, one step at a time.
     \\- Edits never touch the original file: they are a recipe the app keeps beside it. Exports always
     \\  keep the camera, lens and date metadata; leave GPS as it is unless asked.
     \\- Looks are .cube LUTs (list_looks); shaders are small GLSL effects (list_shaders, save_shader).
@@ -34,7 +32,7 @@ pub const instructions =
 pub const definitions =
     \\[
     \\{"name":"get_view","title":"See the open photo",
-    \\ "description":"What the user sees now: the folder, the open photo (name, camera, lens, exposure), the active tab, the photo's current edits (only values that differ from the default), any change of yours awaiting Keep/Undo, a screenshot of the rendered photo, and its tones measured at full screenshot size: % of clipped highlights (any channel at 255, and per channel), % of crushed shadows, mean brightness and a 16-bin histogram.",
+    \\ "description":"What the user sees now: the folder, the open photo (name, camera, lens, exposure), the active tab, the photo's current edits (only values that differ from the default), a screenshot of the rendered photo, and its tones measured at full screenshot size: % of clipped highlights (any channel at 255, and per channel), % of crushed shadows, mean brightness and a 16-bin histogram.",
     \\ "inputSchema":{"type":"object","properties":{}}},
     \\{"name":"set_edits","title":"Edit the open photo",
     \\ "description":"Changes the open photo's edits, live. Give only the fields to change; everything else stays. Set a field to its default (0, or look name 'none') to remove it. Give `photo` (the name get_view shows) and nothing changes if another photo is open by now. Returns the new view with a screenshot. Ranges: exposure -5..5 (stops); temperature, tint, contrast, highlights, shadows, saturation -100..100; look.strength, halation, vignette, grain.amount, grain.size, detail.sharpen, detail.noise 0..100; colour bands (reds, oranges, yellows, greens, blues, purples) hue/sat/light -100..100; crop.rect [x,y,w,h] 0..1 of the rotated photo, crop.rotate 0/90/180/270 (clockwise), crop.straighten -45..45 degrees (+ turns the photo clockwise, - counter-clockwise), crop.aspect original|free|1:1|4:5|3:2|16:9 (literal: 4:5 is portrait). Give crop.aspect and/or crop.focus [x,y] (0..1, the point to keep in the middle) without a rect and the app fits the biggest crop of that aspect around it. shaders replaces the whole list: [{name, strength 0..100, enabled, params:{name:value}}].",
@@ -48,7 +46,6 @@ pub const definitions =
     \\  "grain":{"type":"object","properties":{"amount":{"type":"number","minimum":0,"maximum":100},"size":{"type":"number","minimum":0,"maximum":100}}},
     \\  "detail":{"type":"object","properties":{"sharpen":{"type":"number","minimum":0,"maximum":100},"noise":{"type":"number","minimum":0,"maximum":100}}},
     \\  "crop":{"type":"object","properties":{"aspect":{"type":"string"},"focus":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2},"straighten":{"type":"number"},"rotate":{"type":"number"},"flip":{"type":"boolean"},"rect":{"type":"array","items":{"type":"number"},"minItems":4,"maxItems":4}}},
-    \\  "note":{"type":"string","description":"What you changed, in a few words, shown to the user beside Keep / Undo"},
     \\  "photo":{"type":"string","description":"The photo you mean to edit; refused if another one is open"}}}},
     \\{"name":"open_photo","title":"Open another photo",
     \\ "description":"Opens a photo of the folder by name (its path in the folder, or just the file name), or the next or previous one. Returns the new view.",
@@ -57,7 +54,7 @@ pub const definitions =
     \\ "description":"The open folder's photos, in order, each with whether it has edits (and for edited ones, whether the user or Claude changed it last, and when).",
     \\ "inputSchema":{"type":"object","properties":{"edited_only":{"type":"boolean","description":"Only the photos with edits"}}}},
     \\{"name":"undo","title":"Undo the last change",
-    \\ "description":"Undoes the last change to the open photo, one step, whoever made it. (The user's Undo on the Keep / Undo bar takes back all of your changes since their last Keep at once.) Returns the new view.",
+    \\ "description":"Undoes the last change to the open photo, one step, whoever made it. Returns the new view.",
     \\ "inputSchema":{"type":"object","properties":{"photo":{"type":"string","description":"The photo you mean; refused if another one is open"}}}},
     \\{"name":"export","title":"Export photos",
     \\ "description":"Exports the open photo, or the named ones, with their edits (camera, lens, exposure and date always kept). Options default to the app's export settings; the folder defaults to ~/Pictures/Doka. An export never overwrites a file: -2, -3… is added. aspect (with focus) crops this export only; the recipe stays as it is.",
@@ -123,15 +120,11 @@ fn dispatch(app: *App, a: std.mem.Allocator, call: *Mcp.Call, args: std.json.Val
     if (eql(name, "get_view")) return view(app, a, call, null);
     if (eql(name, "list_photos")) return listPhotos(app, a, call, if (args == .object) if (args.object.get("edited_only")) |v| v == .bool and v.bool else false else false);
     if (eql(name, "set_edits")) {
-        const s = try app.currentSession();
+        const s = (app.currentSession() orelse return error.NoPhoto);
         if (args != .object) return error.BadArguments;
         if (!try samePhoto(app, a, call, args)) return;
         var patch = try args.object.clone(a);
         _ = patch.orderedRemove("photo");
-        var note: []const u8 = "";
-        if (patch.fetchOrderedRemove("note")) |n| if (n.value == .string) {
-            note = n.value.string;
-        };
         if (patch.getPtr("crop")) |crop| if (crop.* == .object) {
             const r = try s.recipe(a);
             try fitCropPatch(app, a, app.current.?, r.crop, &crop.object);
@@ -139,10 +132,9 @@ fn dispatch(app: *App, a: std.mem.Allocator, call: *Mcp.Call, args: std.json.Val
         var it = patch.iterator();
         while (it.next()) |e| if (!isRecipeField(e.key_ptr.*)) return error.UnknownField;
         try validate(Recipe, .{ .object = patch });
-        if (note.len == 0) note = try summarize(a, .{ .object = patch });
-        _ = try s.change(a, .{ .patch = .{ .object = patch }, .by = .claude, .now = app.now(), .note = note });
+        _ = try s.change(a, .{ .patch = .{ .object = patch }, .by = .claude, .now = app.now() });
         app.changed();
-        app.emitPhoto();
+        app.hooks.edited.?();
         return view(app, a, call, null);
     }
     if (eql(name, "open_photo")) {
@@ -154,28 +146,28 @@ fn dispatch(app: *App, a: std.mem.Allocator, call: *Mcp.Call, args: std.json.Val
             return error.BadArguments;
         } else return error.BadArguments;
         try app.open(i);
-        app.emitState();
+        app.hooks.photo_changed.?();
         return view(app, a, call, null);
     }
     if (eql(name, "undo")) {
-        const s = try app.currentSession();
+        const s = (app.currentSession() orelse return error.NoPhoto);
         if (!try samePhoto(app, a, call, args)) return;
         if (!try s.undo()) return call.finish(try Mcp.textResult(app.gpa, "Nothing to undo.", false));
         app.changed();
-        app.emitPhoto();
+        app.hooks.edited.?();
         return view(app, a, call, "Undid the last change.");
     }
-    if (eql(name, "export")) return app.exportForClaude(call, args);
+    if (eql(name, "export")) return app.hooks.export_for_claude.?(call, args);
     if (eql(name, "list_looks") or eql(name, "list_shaders")) return listLibrary(app, a, call, eql(name, "list_looks"));
     if (eql(name, "get_shader")) {
-        const sh = try app.library.readShader(a, string(args, "name") orelse return error.BadArguments);
+        const sh = try app.library.?.readShader(a, string(args, "name") orelse return error.BadArguments);
         const text = try std.fmt.allocPrint(a, "shader.json:\n{s}\n\nshader.glsl:\n{s}", .{ sh.json_text, sh.source });
         return call.finish(try Mcp.textResult(app.gpa, text, false));
     }
     if (eql(name, "save_shader")) return saveShader(app, a, call, args);
     if (eql(name, "delete_shader")) {
         const n = string(args, "name") orelse return error.BadArguments;
-        try app.library.deleteShader(n);
+        try app.library.?.deleteShader(n);
         return call.finish(try Mcp.textResult(app.gpa, try std.fmt.allocPrint(a, "Deleted the shader {s}.", .{n}), false));
     }
     if (eql(name, "bake_look")) return bakeLook(app, a, call, args);
@@ -277,29 +269,6 @@ pub fn find(f: *const App.Folder, name: []const u8) !usize {
     return found orelse error.NoSuchPhoto;
 }
 
-/// "exposure 0.3, grain amount 25": the change in words, when Claude gave no note.
-pub fn summarize(a: std.mem.Allocator, patch: std.json.Value) ![]const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    try summarizeInto(a, &out, "", patch);
-    return out.items;
-}
-
-fn summarizeInto(a: std.mem.Allocator, out: *std.ArrayList(u8), prefix: []const u8, v: std.json.Value) !void {
-    switch (v) {
-        .object => |o| {
-            var it = o.iterator();
-            while (it.next()) |e| {
-                const key = if (eql(prefix, "edits") or prefix.len == 0) e.key_ptr.* else try std.fmt.allocPrint(a, "{s} {s}", .{ prefix, e.key_ptr.* });
-                try summarizeInto(a, out, key, e.value_ptr.*);
-            }
-        },
-        else => {
-            if (out.items.len > 0) try out.appendSlice(a, ", ");
-            try out.print(a, "{s} {f}", .{ prefix, std.json.fmt(v, .{}) });
-        },
-    }
-}
-
 fn listPhotos(app: *App, a: std.mem.Allocator, call: *Mcp.Call, edited_only: bool) !void {
     const f = &(app.folder orelse return error.NoFolder);
     var out: Io.Writer.Allocating = .init(a);
@@ -331,7 +300,7 @@ fn listPhotos(app: *App, a: std.mem.Allocator, call: *Mcp.Call, edited_only: boo
     call.finish(try Mcp.textResult(app.gpa, out.written(), false));
 }
 
-/// The view as text, then the page's screenshot of it (`Screenshot.done`).
+/// The view as text, then a screenshot of it (`finishScreenshot`).
 pub fn view(app: *App, a: std.mem.Allocator, call: *Mcp.Call, lead: ?[]const u8) !void {
     var out: Io.Writer.Allocating = .init(a);
     if (lead) |l| try out.writer.print("{s}\n", .{l});
@@ -341,7 +310,7 @@ pub fn view(app: *App, a: std.mem.Allocator, call: *Mcp.Call, lead: ?[]const u8)
         defer app.gpa.free(text);
         return call.finish(try Mcp.textResult(app.gpa, text, false));
     }
-    app.requestScreenshot(.{ .call = call, .text = text });
+    app.hooks.screenshot.?(.{ .call = call, .text = text });
 }
 
 fn writeView(app: *App, a: std.mem.Allocator, w: *Io.Writer) !void {
@@ -375,8 +344,6 @@ fn writeView(app: *App, a: std.mem.Allocator, w: *Io.Writer) !void {
         try s.beginWriteRaw();
         try s.writer.writeAll(sess.json);
         s.endWriteRaw();
-        try s.objectField("awaitingKeepOrUndo");
-        try s.write(if (sess.claudePending()) sess.claude_note.items else null);
     } else {
         try s.objectField("photo");
         try s.write(null);
@@ -385,18 +352,12 @@ fn writeView(app: *App, a: std.mem.Allocator, w: *Io.Writer) !void {
 }
 
 /// A view waiting for its screenshot.
-pub const Screenshot = struct {
-    call: *Mcp.Call,
-    // Owned by the app's allocator.
-    text: []u8,
-    id: u32 = 0,
-    timer: c_uint = 0,
-};
+pub const Screenshot = App.Shot;
 
-/// The page's screenshot (base64 JPEG, or empty when it couldn't draw): the call's answer.
+/// The screenshot (base64 JPEG, or empty when it couldn't draw): the call's answer.
 pub fn finishScreenshot(app: *App, shot: Screenshot, jpeg_base64: []const u8, tones: []const u8) void {
     defer app.gpa.free(shot.text);
-    // The rendered photo's numbers after the view: clipping, mean, histogram (ui/snapshot.ts).
+    // The rendered photo's numbers after the view: clipping, mean, histogram.
     const text = if (tones.len > 0)
         std.fmt.allocPrint(app.gpa, "{s}\nTones of the rendered photo (% of pixels; histogram darkest first, 16 bins): {s}", .{ shot.text, tones }) catch return
     else
@@ -414,15 +375,15 @@ fn listLibrary(app: *App, a: std.mem.Allocator, call: *Mcp.Call, looks: bool) !v
     var s: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .indent_1 } };
     try s.beginObject();
     try s.objectField("folder");
-    try s.write(if (looks) app.library.looks_dir else app.library.shaders_dir);
+    try s.write(if (looks) app.library.?.looks_dir else app.library.?.shaders_dir);
     if (looks) {
         try s.objectField("looks");
-        try s.write(try app.library.lookNames(a));
+        try s.write(try app.library.?.lookNames(a));
     } else {
         try s.objectField("shaders");
         try s.beginArray();
-        for (try app.library.shaderNames(a)) |n| {
-            const sh = app.library.readShader(a, n) catch continue;
+        for (try app.library.?.shaderNames(a)) |n| {
+            const sh = app.library.?.readShader(a, n) catch continue;
             try s.write(.{ .name = n, .description = sh.json.description, .params = sh.json.params, .needs = sh.json.needs });
         }
         try s.endArray();
@@ -431,7 +392,7 @@ fn listLibrary(app: *App, a: std.mem.Allocator, call: *Mcp.Call, looks: bool) !v
     call.finish(try Mcp.textResult(app.gpa, out.written(), false));
 }
 
-// save_shader waits for the page to compile it.
+// save_shader compiles it first; what doesn't compile isn't saved.
 const PendingShader = struct {
     call: *Mcp.Call,
     name: []u8,
@@ -466,8 +427,9 @@ fn saveShader(app: *App, a: std.mem.Allocator, call: *Mcp.Call, args: std.json.V
 
     const pending = try app.gpa.create(PendingShader);
     pending.* = .{ .call = call, .name = try app.gpa.dupe(u8, name), .source = try app.gpa.dupe(u8, source), .json = try app.gpa.dupe(u8, json), .strength = strength, .apply = apply };
-    const fields = try std.fmt.allocPrint(a, "\"name\":{f},\"source\":{f},\"def\":{s}", .{ std.json.fmt(name, .{}), std.json.fmt(source, .{}), json });
-    app.ask("compileShader", fields, pending, compiled, 10_000);
+    var answer: std.json.ObjectMap = .empty;
+    try answer.put(a, "error", .{ .string = app.hooks.compile_shader.?(a, def.params, source) });
+    compiled(pending, app, a, .{ .object = answer });
 }
 
 fn compiled(ctx: *anyopaque, app: *App, a: std.mem.Allocator, answer: std.json.Value) void {
@@ -478,20 +440,20 @@ fn compiled(ctx: *anyopaque, app: *App, a: std.mem.Allocator, answer: std.json.V
             call.finish(Mcp.textResult(gpa, t, is_error) catch return);
         }
     }.text;
-    if (answer == .null) return finish(p.call, app.gpa, "The app didn't compile the shader (no answer from the page).", true);
+    if (answer == .null) return finish(p.call, app.gpa, "The app didn't compile the shader (no OpenGL context yet).", true);
     if (string(answer, "error")) |err| if (err.len > 0) {
         const t = std.fmt.allocPrint(a, "The shader didn't compile, so nothing was saved. Lines count from the top of your source.\n{s}", .{err}) catch err;
         return finish(p.call, app.gpa, t, true);
     };
-    app.library.saveShader(a, p.name, p.source, p.json, app.now()) catch |err| {
+    app.library.?.saveShader(a, p.name, p.source, p.json, app.now()) catch |err| {
         return finish(p.call, app.gpa, std.fmt.allocPrint(a, "Compiled, but saving failed: {t}", .{err}) catch "saving failed", true);
     };
     // The page hears now, not when the file watcher settles: the screenshot needs the new version.
-    app.emit("library", "{}");
+    app.hooks.library_changed.?();
     if (!p.apply or app.current == null) return finish(p.call, app.gpa, "Saved.", false);
 
     // On the open photo: added at the end, or this one's strength changed.
-    const s = app.currentSession() catch return finish(p.call, app.gpa, "Saved.", false);
+    const s = app.currentSession() orelse return finish(p.call, app.gpa, "Saved.", false);
     const r = s.recipe(a) catch return finish(p.call, app.gpa, "Saved.", false);
     var list: std.ArrayList(Recipe.ShaderUse) = .empty;
     var found = false;
@@ -507,24 +469,26 @@ fn compiled(ctx: *anyopaque, app: *App, a: std.mem.Allocator, answer: std.json.V
     if (!found) list.append(a, .{ .name = p.name, .strength = p.strength }) catch return;
     const patch_text = std.fmt.allocPrint(a, "{{\"shaders\":{f}}}", .{std.json.fmt(list.items, .{})}) catch return;
     const patch = std.json.parseFromSliceLeaky(std.json.Value, a, patch_text, .{}) catch return;
-    const note = std.fmt.allocPrint(a, "shader {s} {d}%", .{ p.name, p.strength }) catch "";
-    _ = s.change(a, .{ .patch = patch, .by = .claude, .now = app.now(), .note = note }) catch return;
+    _ = s.change(a, .{ .patch = patch, .by = .claude, .now = app.now() }) catch return;
     app.changed();
-    app.emitPhoto();
+    app.hooks.edited.?();
     view(app, a, p.call, "Saved and applied.") catch |err| finish(p.call, app.gpa, @errorName(err), true);
 }
 
 const PendingBake = struct { call: *Mcp.Call, name: []u8 };
 
 fn bakeLook(app: *App, a: std.mem.Allocator, call: *Mcp.Call, args: std.json.Value) !void {
-    _ = try app.currentSession();
+    _ = (app.currentSession() orelse return error.NoPhoto);
     const raw = string(args, "name") orelse return error.BadArguments;
     const name = if (std.ascii.endsWithIgnoreCase(raw, ".cube")) raw else try std.fmt.allocPrint(a, "{s}.cube", .{raw});
     if (!Library.validName(name)) return error.BadName;
     const size: u32 = if (args.object.get("size")) |v| (if (v == .integer and v.integer == 65) 65 else 33) else 33;
     const pending = try app.gpa.create(PendingBake);
     pending.* = .{ .call = call, .name = try app.gpa.dupe(u8, name) };
-    app.ask("bakeLook", try std.fmt.allocPrint(a, "\"size\":{d},\"title\":{f}", .{ size, std.json.fmt(name[0 .. name.len - 5], .{}) }), pending, baked, 20_000);
+    var answer: std.json.ObjectMap = .empty;
+    const cube = app.hooks.bake.?(a, name[0 .. name.len - 5], size) catch "";
+    try answer.put(a, "cube", .{ .string = cube });
+    baked(pending, app, a, .{ .object = answer });
 }
 
 fn baked(ctx: *anyopaque, app: *App, a: std.mem.Allocator, answer: std.json.Value) void {
@@ -535,8 +499,8 @@ fn baked(ctx: *anyopaque, app: *App, a: std.mem.Allocator, answer: std.json.Valu
     }
     const cube = string(answer, "cube") orelse "";
     const t, const is_error = if (cube.len == 0)
-        .{ "The page couldn't bake the look.", true }
-    else if (app.library.saveLook(a, p.name, cube)) |_|
+        .{ "The app couldn't bake the look.", true }
+    else if (app.library.?.saveLook(a, p.name, cube)) |_|
         .{ std.fmt.allocPrint(a, "Baked {s} into the looks folder; use it with set_edits look.name \"{s}\".", .{ p.name, p.name }) catch "Baked.", false }
     else |err|
         .{ std.fmt.allocPrint(a, "Baking worked, saving failed: {t}", .{err}) catch "saving failed", true };

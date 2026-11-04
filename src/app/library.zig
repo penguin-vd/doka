@@ -1,13 +1,12 @@
 //! Looks and shaders on disk (SPEC.md, Looks and shaders):
 //!   ~/.config/doka/looks/<name>.cube            a LUT; drop one in and it's there
-//!   ~/.config/doka/shaders/<name>/shader.glsl   `vec3 effect(vec3 c)` (ui/glsl/effect.glsl)
+//!   ~/.config/doka/shaders/<name>/shader.glsl   `vec3 effect(vec3 c)` (glsl/effect.glsl)
 //!   ~/.config/doka/shaders/<name>/shader.json   {"description", "params": [{name, label, default, min, max}], "needs": []}
-//! Both folders are watched: a file added or edited by hand reaches the page at once. A shader's
+//! Both folders are watched: a file added or edited by hand reaches the window at once. A shader's
 //! last five versions are kept in its .versions/ when Claude replaces it.
 const std = @import("std");
 const Io = std.Io;
-const c = @import("c.zig");
-const Window = @import("window.zig");
+const c = @import("gtk.zig");
 
 const Library = @This();
 
@@ -16,7 +15,7 @@ const log = std.log.scoped(.library);
 pub const versions_kept = 5;
 pub const max_cube = 64 << 20;
 pub const max_shader = 256 << 10;
-// Edits arrive as several file events; the page hears once they've settled.
+// Edits arrive as several file events; the window hears once they've settled.
 const settle_ms = 250;
 
 gpa: std.mem.Allocator,
@@ -145,7 +144,7 @@ pub fn write(lib: *Library, a: std.mem.Allocator, s: *std.json.Stringify) !void 
     try s.endObject();
 }
 
-// The file's modification time: the page reloads what changed.
+// The file's modification time: what changed gets reloaded.
 fn stamp(lib: *Library, a: std.mem.Allocator, dir: []const u8, name: []const u8) i64 {
     const path = std.fs.path.join(a, &.{ dir, name }) catch return 0;
     const st = Io.Dir.cwd().statFile(lib.io, path, .{}) catch return 0;
@@ -174,7 +173,7 @@ pub fn lookNames(lib: *Library, a: std.mem.Allocator) ![]const []const u8 {
 }
 
 // The .cube's TITLE, or its name without the extension.
-fn lookTitle(lib: *Library, a: std.mem.Allocator, name: []const u8) []const u8 {
+pub fn lookTitle(lib: *Library, a: std.mem.Allocator, name: []const u8) []const u8 {
     const fallback = name[0 .. name.len - ".cube".len];
     const path = std.fs.path.join(a, &.{ lib.looks_dir, name }) catch return fallback;
     var file = Io.Dir.cwd().openFile(lib.io, path, .{}) catch return fallback;
@@ -287,29 +286,6 @@ pub fn saveLook(lib: *Library, a: std.mem.Allocator, name: []const u8, cube: []c
     try @import("photo-core").store.writeAtomic(lib.io, a, dir, name, cube);
 }
 
-/// Serves `looks/<name>.cube`; false when the path isn't one.
-pub fn handle(lib: *Library, request: *Window.Request, path: []const u8) bool {
-    if (!std.mem.startsWith(u8, path, "looks/")) return false;
-    var arena: std.heap.ArenaAllocator = .init(lib.gpa);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const name = @import("ui.zig").percentDecode(a, path["looks/".len..]) catch null orelse {
-        Window.fail(request, 400, "bad name");
-        return true;
-    };
-    if (!validName(name)) {
-        Window.fail(request, 400, "bad name");
-        return true;
-    }
-    const full = std.fs.path.join(a, &.{ lib.looks_dir, name }) catch return true;
-    const bytes = Io.Dir.cwd().readFileAlloc(lib.io, full, a, .limited(max_cube)) catch {
-        Window.fail(request, 404, "no such look");
-        return true;
-    };
-    Window.respond(request, bytes, "text/plain");
-    return true;
-}
-
 /// Watches both folders and every shader's folder; `on_change` hears about edits.
 pub fn watch(lib: *Library) void {
     lib.unwatch();
@@ -339,8 +315,8 @@ fn unwatch(lib: *Library) void {
 
 fn onFileEvent(_: *c.GFileMonitor, _: *c.GFile, _: ?*c.GFile, _: c_int, ctx: ?*anyopaque) callconv(.c) void {
     const lib: *Library = @ptrCast(@alignCast(ctx));
-    if (lib.settle_timer != 0) Window.cancel(lib.settle_timer);
-    lib.settle_timer = Window.after(settle_ms, onSettled, lib);
+    if (lib.settle_timer != 0) _ = c.g_source_remove(lib.settle_timer);
+    lib.settle_timer = c.g_timeout_add(settle_ms, onSettled, lib);
 }
 
 fn onSettled(ctx: ?*anyopaque) callconv(.c) c_int {

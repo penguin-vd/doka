@@ -8,6 +8,8 @@ pub const Photo = struct {
     // Relative to the root, '/'-separated: "2024 Japan/P1010001.JPG".
     rel: []const u8,
     edited: bool,
+    // "2026-08-07", filled in by a background scan (app.zig, DayScan); empty until then.
+    day: []const u8 = "",
 };
 
 pub fn isPhoto(name: []const u8) bool {

@@ -15,13 +15,12 @@ A small, fast Linux desktop app for everyday photo edits, which Claude Code can 
 
 ## Tech stack
 
-Zig for everything, calling C libraries directly. The UI is a small HTML page shown in the system webview, so the app stays tiny.
+Zig for everything, calling C libraries directly. The UI is GTK 4, with the photo drawn by OpenGL in it. (It began as a page in WebKit, which stayed near 60 frames per second on a 165 Hz screen.)
 
 | Part | Choice | Why |
 | --- | --- | --- |
-| App window | [webview](https://github.com/webview/webview) library (MIT) with WebKitGTK 4.1 + GTK 3 | Small and long-established; has a C API Zig calls directly; Zig's build system compiles it (it needs C++11) |
-| UI | Plain HTML, CSS and TypeScript (a tiny framework like Preact is optional) | The UI is small; no heavy framework needed |
-| Processing | GLSL shaders (WebGL2), for preview and export | Instant sliders, identical export, and looks Claude can write |
+| App window and UI | GTK 4 | Real lists, dialogs and text; follows the screen's refresh rate; draws nothing when idle; runs on a Mac too |
+| Processing | GLSL shaders (OpenGL ES 3 or desktop 4.1), for preview and export | Instant sliders, identical export, and looks Claude can write |
 | Decode, colour, encode | libvips through `@cImport` | Very fast, multi-threaded, low memory; keeps EXIF, XMP and ICC when saving |
 | GPS stripping | Remove the GPS EXIF fields before saving | Only when the user unticks GPS |
 | App ↔ Claude link | The app serves MCP itself, over HTTP on 127.0.0.1 | Zig's built-in HTTP server; localhost only; answers from the live state |
@@ -47,9 +46,9 @@ The preview renders a screen-sized copy. Export renders the full image in tiles 
 
 **Tuned for good camera JPEGs:** working in float avoids banding when pushing an 8-bit JPEG. Blown highlights in a JPEG can't be recovered, so the highlight tools aim for a gentle film-like roll-off rather than recovery.
 
-This needs WebGL2 with float render targets in WebKitGTK. Check that on the GPU during step 1 of the build.
+This needs float render targets; `zig build probe` checks them on the GPU.
 
-**Target machine:** Linux with an NVIDIA RTX 3080, which is plenty for full-resolution float rendering. WebKitGTK on NVIDIA's proprietary driver sometimes shows a blank or flickering window; `WEBKIT_DISABLE_DMABUF_RENDERER=1` usually fixes it.
+**Target machine:** Linux with an NVIDIA RTX 3080 and a 165 Hz screen, which is plenty for full-resolution float rendering.
 
 ## Looks and shaders
 
@@ -110,12 +109,12 @@ One Zig project: a shared module, `photo-core` (all image work), and one app bin
 
 ```
  ┌──────────────────────────┐
- │ Desktop app UI           │
- │ HTML + WebGL pipeline    │
+ │ Desktop app UI (GTK 4)   │
+ │ OpenGL pipeline          │
  └────────────┬─────────────┘
-              │ JS bindings
+              │
  ┌────────────┴─────────────┐   MCP over HTTP    ┌──────────────────────┐
- │ App window (Zig+webview) │ ◀────────────────▶ │ Claude Code          │
+ │ App (Zig)                │ ◀────────────────▶ │ Claude Code          │
  │ Live state, serves MCP   │   127.0.0.1:7777   │ Asks, looks, edits   │
  └────────────┬─────────────┘                    └──────────────────────┘
               │
@@ -177,7 +176,7 @@ Recipes live in a hidden `.photo-editor/` folder at the root of the folder you o
 | `detail.sharpen`, `detail.noise` | 0 to 100 | Full quality at export; preview approximates |
 | `crop.rect` | 0 to 1, as x, y, width, height | Relative, so it works at any resolution |
 | `crop.rotate` | 0, 90, 180, 270 | Quarter turns |
-| `updatedBy` | "user" or "claude" | Lets the app show Claude's changes with Keep / Undo |
+| `updatedBy` | "user" or "claude" | Who changed it last; `list_photos` reports it |
 
 Undo history is kept in memory for the session and works for edits from either side. After a restart, only the current edits remain.
 
@@ -185,26 +184,26 @@ Undo history is kept in memory for the session and works for edits from either s
 
 The UI follows the design canvas (see `design/`): folder sidebar, photo in the middle, tool panel on the right. Where the design and this spec differ, this spec wins.
 
-- **Folder browser:** Open folder (native dialog), thumbnail grid, a dot on edited photos. Remember the last folder. ← → switches photos.
+- **Folder browser:** Open folder (native dialog), thumbnail grid separated by subfolder and by the day taken (from EXIF), a dot on edited photos, filters for edited / not edited and by day. Remember the last folder. ← → switches photos, among those the filters show.
 - **Adjust:** Exposure, Contrast, Highlights, Shadows, Temperature, Tint, Saturation, Sharpen, Noise reduction. Double-click a slider to reset it.
 - **Looks:** a grid of looks (LUT files), each previewed on the current photo, plus Strength, Grain (amount, size) and Halation sliders. A collapsed Colour section holds the per-colour mixer, and a Shaders list below lets you add, reorder and toggle shaders.
 - **Crop:** aspect ratios (Original, 1:1, 4:5, 3:2, 16:9), drag handles, Straighten, Rotate 90°, Flip.
 - **Before / after:** hold `\` or click the toggle to see the original.
 - **Undo / redo:** Ctrl+Z / Ctrl+Shift+Z, per photo.
 - **Export:** JPEG, PNG or TIFF; quality; size (original or long edge); Keep metadata on by default; GPS toggle. Batch export for selected photos. Defaults (output folder, naming, quality) to be decided later; pick sensible ones and make them easy to change.
-- **Claude changes:** edits from Claude appear live with a Keep / Undo bar and a short note of what changed.
+- **Claude changes:** edits from Claude simply apply, live, and the sliders follow. Ctrl+Z undoes them one step at a time, like any other change.
 - **Auto-save:** recipes save to disk as you edit, no Save button.
 
 ## Claude Code integration
 
-Open the app, open Claude Code, and ask: "make it more film-like." Claude sees the same photo and edits you do, changes it live, and you keep or undo the result.
+Open the app, open Claude Code, and ask: "make it more film-like." Claude sees the same photo and edits you do, changes it live, and you carry on from there or undo it.
 
 **How it connects:** while it's open, the app serves MCP at `http://127.0.0.1:7777/mcp`. Add it to Claude Code once: `claude mcp add --transport http photo http://127.0.0.1:7777/mcp`. There is no bridge, socket or second process.
 
 | Tool | What it does |
 | --- | --- |
 | `get_view` | What you see right now: folder, open photo, active tab, current edits, camera and lens summary, plus a screenshot of the rendered photo, returned as an image |
-| `set_edits` | Changes sliders, look, colour, grain, halation or crop live (only the fields given); shows the Keep / Undo bar; returns the new view |
+| `set_edits` | Changes sliders, look, colour, grain, halation or crop live (only the fields given); returns the new view |
 | `open_photo` | Switches to another photo by name, or next / previous |
 | `list_photos` | Photos in the open folder, with an edited flag |
 | `undo` | Undoes the last change |
@@ -221,7 +220,7 @@ The server's instructions tell Claude to call `get_view` before editing, make on
 1. `get_view` → Claude sees the photo and that only Exposure +0.3 is set.
 2. `set_edits` → a film look at 70%, Highlights −15, Grain 25, a touch of Halation.
 3. `get_view` → checks the new screenshot.
-4. Replies: "Added the Film look at 70% and softened the highlights." You click Keep, or say "a bit less."
+4. Replies: "Added the Film look at 70% and softened the highlights." You move a slider, press Ctrl+Z, or say "a bit less."
 
 There's no official Zig MCP SDK, but none is needed: each request is a JSON-RPC message POSTed to `/mcp`, and the app can answer with plain JSON. Only `initialize`, `tools/list` and `tools/call` are needed, a few hundred lines with `std.http` and `std.json`.
 
@@ -238,13 +237,13 @@ Budgets to test against, measured on a 24-megapixel JPEG.
 | Export one photo | < 2 s | GPU render in tiles, then libvips encode |
 | Claude request round trip | < 300 ms with screenshot | Localhost HTTP; screenshot as a 1024 px JPEG |
 | Idle memory | < 150 MB | Keep only the current photo at full size |
-| Download size | < 5 MB | System webview and libvips; nothing bundled |
+| Download size | < 10 MB | System GTK and libvips; nothing bundled |
 
 ## Out of scope for v1
 
 - RAW files: not needed, the photos are good JPEGs (LibRaw could add it later)
 - Layers, masks, brushes, healing or local adjustments
-- Library features: ratings, tags, albums, search
+- Library features: ratings, tags, albums, search (the folder browser's filters are all there is)
 - Cloud sync, accounts, sharing
 - Windows and macOS builds
 - Saved presets that apply a whole recipe in one click (v2)
@@ -253,7 +252,7 @@ Budgets to test against, measured on a 24-megapixel JPEG.
 
 Build the core and a basic window first, then the Claude link early. From step 5 on, Claude can be asked for edits while the rest of the UI grows.
 
-1. **Setup:** pin the Zig version, `build.zig` linking libvips and webview, an empty window that opens. Confirm WebGL2 with float render targets works in the window.
+1. **Setup:** pin the Zig version, `build.zig` linking libvips and GTK, an empty window that opens. Confirm float render targets work.
 2. **Core:** recipe types; decode, colour management, encode and metadata copy with libvips. A test that compares EXIF before and after export.
 3. **App window:** open folder, thumbnail grid with cache, switch photos.
 4. **Adjust tab:** base shader pipeline from decoded photo to screen; auto-save recipes.
@@ -261,7 +260,7 @@ Build the core and a basic window first, then the Claude link early. From step 5
 6. **The other tools:** `open_photo`, `list_photos`, `undo`, `export`.
 7. **Looks and Crop tabs:** look folders with hot reload, the look and shader tools for Claude, colour mixer, grain, halation, and tiled full-res export on the GPU.
 8. **Export dialog,** including batch export and the GPS toggle.
-9. **Keep / Undo bar** for Claude's edits.
+9. **Claude's edits in the undo history** (first a Keep / Undo bar, dropped: it got in the way).
 10. **Polish:** keyboard shortcuts, before/after, performance check against the targets above.
 
 **Done when:** you can open a folder, edit and export photos without the metadata changing, and ask Claude Code "make it more film-like" and watch the open photo change.

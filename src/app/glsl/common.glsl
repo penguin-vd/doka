@@ -1,4 +1,4 @@
-// Prepended to every fragment shader (ui/gl/pipeline.ts), the user's shaders included.
+// Prepended to every fragment shader (pipeline.zig), the user's shaders included.
 precision highp float;
 precision highp sampler3D;
 

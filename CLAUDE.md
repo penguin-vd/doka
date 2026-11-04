@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-A small, fast Linux photo editor in Zig, with a webview UI, a GLSL processing pipeline and a built-in MCP server so Claude Code can edit the open photo live. `SPEC.md` is the source of truth; read it before changing anything structural.
+A small, fast Linux photo editor in Zig, with a GTK 4 UI, a GLSL processing pipeline and a built-in MCP server so Claude Code can edit the open photo live. `SPEC.md` is the source of truth; read it before changing anything structural.
 
 ## Hard rules
 
@@ -13,51 +13,51 @@ A small, fast Linux photo editor in Zig, with a webview UI, a GLSL processing pi
 ## Run
 
 ```sh
-zig build run          # the editor
+zig build run          # the editor (zig-out/bin/doka: GTK 4 and OpenGL)
 zig build test         # unit tests (the app's, and photo-core's as a second binary)
-zig build probe        # hidden window: WebGL2 float targets, then the pipeline's tests on the GPU (ui/selftest.ts)
-./zig-out/bin/doka --shot out.png testdata/photos [--tab looks] [--eval 'await test.edit({...})']
-                       # the app drawn off the screen, saved as a PNG: how to look at it; never open a visible window
-./zig-out/bin/doka --offscreen --shots DIR testdata/photos &   # MCP on :7777, a PNG per tool call
+zig build probe        # no window: the pipeline's tests on the GPU, and an export's metadata (src/app/selftest.zig)
+zig build -Doptimize=ReleaseSafe   # the build to actually use: a plain `zig build` is a slower debug one
+./zig-out/bin/doka photo.jpg --check out.ppm   # no window: the photo through the pipeline, as a picture
+                       # never open a visible window: the owner tests the window on their own screen
 scripts/setup.sh       # once per clone: git's pre-commit (format, changelog, test, probe)
 scripts/starter-looks.py   # twelve film looks into ~/.config/doka/looks (downloads 420 MB once)
 ```
 
-Layout: `src/core/` is `photo-core` (libvips, no window: `decode`, `encode` + `exif`, `Recipe`,
-`store`; its tests need `testdata/photos/` and skip without it); `src/app/` the window, its C bindings
-(`c.zig`) and the page's files (`ui.zig`); `ui/` the page (HTML, `style.css`, TypeScript).
-C APIs are declared by hand in Zig (`src/app/c.zig`, the `c` struct in `src/core/vips.zig`), only
+Layout: `src/main.zig` is the window; `src/app/` the rest of the editor (`app.zig` the state with no window,
+`pipeline.zig` image passes over `glsl/`, `canvas.zig` the photo, `sidebar.zig`, `slider.zig`, `looks_panel.zig`,
+`export_dialog.zig`, `exporter.zig`, `tools.zig` and `mcp.zig` Claude's side, `gtk.zig` and `gl.zig` the C APIs by hand).
+`src/core/` is `photo-core` (libvips, no window: `decode`, `encode` + `exif`, `Recipe`,
+`store`; its tests need `testdata/photos/` and skip without it).
+C APIs are declared by hand in Zig (`src/app/gtk.zig`, `src/app/gl.zig`, the `c` struct in `src/core/vips.zig`), only
 what we call: Zig 0.16's translate-c can't read GLib's headers. Add a declaration when you need a call.
 
-Pipeline: `ui/gl/pipeline.ts` runs `ui/glsl/` for the preview, thumbnails, screenshots and export
-alike; new image maths goes there, with a test in `ui/selftest.ts`. Photos reach the page as linear
-half floats (`app://ui/photo/<rel>?edge=N`, `src/app/images.zig`).
+Pipeline: `src/app/pipeline.zig` runs `src/app/glsl/` for the preview, thumbnails, screenshots and export
+alike; new image maths goes there, with a test in `src/app/selftest.zig`. GTK gives OpenGL ES 3.2 here;
+keep to what's in both ES 3.0 and desktop 4.1 (a Mac's limit), and the shader version line follows the context.
 
-UI: colours, type and sizes are tokens on `:root` in `ui/style.css`; components are classes there
-(`.bar`, `.btn`, ...). Use them; no inline colours, no new frameworks. TypeScript is only type-stripped
-(Node, no packages): erasable syntax only, no `enum` or `namespace`.
+UI: the look is one CSS string in `src/main.zig`: neutral greys only (R = G = B), white for "on" and
+"changed"; the photo is the only colour on screen. No new frameworks.
 
 ## Zig setup
 
 - Follow `../oubliette` for everything Zig: the pinned Zig version, `build.zig` / `build.zig.zon` structure, project layout, formatting, testing and any CI or tooling. Read it first; copy its conventions; never modify it.
 - AI tools often write older Zig syntax. When the compiler disagrees with you, trust the compiler and the pinned version's std library source.
-- C libraries come in through `@cImport` and the build system: libvips, webview (compiled from source; needs C++11), WebKitGTK 4.1 + GTK 3.
+- C libraries come in through the build system: libvips, GTK 4, OpenGL.
 
 ## System dependencies (Debian names)
 
-`libvips-dev`, `libgtk-3-dev`, `libwebkit2gtk-4.1-dev`
+`libvips-dev`, `libgtk-4-dev`, `libopengl-dev`
 
 ## Machine notes
 
 - Target: Linux, NVIDIA RTX 3080 with the proprietary driver.
-- Without `WEBKIT_DISABLE_DMABUF_RENDERER=1` the window dies at once on Hyprland (Wayland) with Gdk "Error 71"; `Window.init` sets it.
+- GTK 4 here runs on OpenGL ES and refuses a desktop OpenGL context: don't set a required version on the GL area.
 - The desktop is Hyprland: screenshot the app window with `grim -g "$(hyprctl clients -j | jq -r '.[] | select(.title=="Doka") | "\(.at[0]),\(.at[1]) \(.size[0])x\(.size[1])"')" out.png`.
-- WebKit reports the WebGL renderer as "Apple GPU" (anti-fingerprinting); the real driver shows in `/proc/<WebKitWebProcess>/maps` (`libnvidia-glcore`).
-- The pipeline needs WebGL2 with float render targets (`EXT_color_buffer_float`). Verify this in build step 1 before building on it.
+- The pipeline needs float render targets (`EXT_color_buffer_float` on OpenGL ES): `zig build probe` checks it.
 
 ## Working style
 
-- Follow the build order in `SPEC.md`, one step at a time. After each step: build, run the tests, commit, and give a short summary of what works and what doesn't.
+- Follow the build order in `SPEC.md`, one step at a time. After each step: build, run the tests, and give a short summary of what works and what doesn't. Commit only when the owner says so.
 - Test with real JPEGs (copies from the photo library on `/mnt/games`). The EXIF round-trip test is mandatory from step 2 on.
 - `reference-photos/` shows the kind of photos this is for. Those copies lost their EXIF in transfer, so don't use them for metadata tests.
 - Preview and export share the same shaders. Never add a second implementation of the image maths.

@@ -48,6 +48,21 @@ Changed for what someone would notice, a line under Decided for a choice whose r
 - Starter shaders bloom, light-leak, clarity and dehaze; each lands in the shaders folder once.
 - `doka --shot out.png [--eval js]` draws the app off the screen and saves a picture: how Claude
   looks at it without taking over the desktop. `zig build probe` runs the pipeline's tests on the GPU.
+- The sidebar separates photos by the day they were taken, with a heading that stays in view, and
+  filters them: all, edited or not edited, and by day. ← → follow the filters; the photo you have
+  open stays in the list so it can't vanish while you edit it.
+- Claude's edits just apply: no Keep / Undo bar; Ctrl+Z undoes them step by step.
+- A new look: the photo is the only colour on screen. Neutral greys, white for "on" and "changed",
+  sliders that fill from zero, whole photos in the thumbnails, compact controls.
+- Smoother: a slider tick no longer rereads the photo's metadata from disk, no redraw when nothing
+  on the canvas changed, the wheel zoom and the photo list glide, holding ← → skips photos instead of queueing them, and the full-size photo waits
+  until the zoom settles.
+- Zooming in no longer freezes when the full-size photo arrives: it goes to the GPU a little per
+  frame. Frames keep coming while the mouse or keyboard is in use, so a scroll or zoom starts at once.
+- Moving or zooming a photo redraws only the last step, not all the edits over all its pixels.
+- The editor is now native: GTK 4 and OpenGL, far smoother than the WebKit window it replaces, with
+  everything it had: filters and day groups, Adjust, Looks, Crop, Compare, export, and all of Claude's
+  tools. The WebKit window, the page in `ui/` and the Node build step are gone.
 
 ### Decided
 
@@ -96,3 +111,11 @@ Changed for what someone would notice, a line under Decided for a choice whose r
 - Clarity and dehaze are starter shaders, not sliders: no new core maths, and Claude can tune them.
 - Styling is one `ui/style.css`: the design's colours, type and sizes as tokens on `:root`, and a
   few component classes (`.bar`, `.btn`, `.status`). No Tailwind: it needs a build or a CDN.
+- The day comes from EXIF, read on a worker from each file's first 64 KB, not from the file's date,
+  which changes on copying. The list stays in file order: a day that comes back gets a second heading.
+- All neutral greys, because any tint beside the photo shifts how its colours read; supersedes the
+  design's amber accent and 44 px targets (this is used with a mouse). The recipe box in the panel
+  went with it: Claude reads the recipe from get_view.
+- GTK 4 instead of WebKit: WebKit stays near 60 frames per second on this NVIDIA driver. GTK over Raylib or
+  SDL: an editor is mostly lists, sliders, dialogs and text, and it draws nothing when idle.
+- The shaders stayed as they were; the version line follows what GTK offers (OpenGL ES here, desktop on a Mac).

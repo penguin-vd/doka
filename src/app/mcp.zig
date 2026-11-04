@@ -8,7 +8,7 @@
 const std = @import("std");
 const Io = std.Io;
 const http = std.http;
-const c = @import("c.zig");
+const c = @import("gtk.zig");
 
 const Server = @This();
 

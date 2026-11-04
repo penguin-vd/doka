@@ -1,0 +1,80 @@
+//! The crop's arithmetic, with no window: fitting an aspect, moving and resizing. Rectangles are
+//! x, y, w, h in 0..1 of the rotated photo.
+const std = @import("std");
+
+pub const Rect = [4]f64;
+const min_size = 0.02;
+
+/// The biggest rectangle of `ratio` centred where `rect` is, inside the photo.
+pub fn fitAspect(rect: Rect, ratio: f64, photo: [2]f64) Rect {
+    const cx = rect[0] + rect[2] / 2;
+    const cy = rect[1] + rect[3] / 2;
+    // In 0..1 units, width over height is the ratio times the photo's height over width.
+    const k = ratio * (photo[1] / photo[0]);
+    var w = @min(1, k);
+    var h = w / k;
+    if (h > 1) {
+        h = 1;
+        w = k;
+    }
+    return .{ std.math.clamp(cx - w / 2, 0, 1 - w), std.math.clamp(cy - h / 2, 0, 1 - h), w, h };
+}
+
+pub fn moved(r: Rect, dx: f64, dy: f64) Rect {
+    return .{ std.math.clamp(r[0] + dx, 0, 1 - r[2]), std.math.clamp(r[1] + dy, 0, 1 - r[3]), r[2], r[3] };
+}
+
+pub const Corner = enum { nw, ne, sw, se };
+
+/// The rectangle with one corner dragged; the opposite corner stays, the ratio holds.
+pub fn resized(r: Rect, corner: Corner, dx: f64, dy: f64, ratio: ?f64, photo: [2]f64) Rect {
+    const west = corner == .nw or corner == .sw;
+    const north = corner == .nw or corner == .ne;
+    const fx = if (west) r[0] + r[2] else r[0];
+    const fy = if (north) r[1] + r[3] else r[1];
+    var nw = @max(min_size, if (west) r[2] - dx else r[2] + dx);
+    var nh = @max(min_size, if (north) r[3] - dy else r[3] + dy);
+    const room_w = if (west) fx else 1 - fx;
+    const room_h = if (north) fy else 1 - fy;
+    nw = @min(nw, room_w);
+    nh = @min(nh, room_h);
+    if (ratio) |q| {
+        const k = q * (photo[1] / photo[0]);
+        // Follow whichever side moved more, then fit the room.
+        if (nw / k > nh) nh = nw / k else nw = nh * k;
+        if (nw > room_w) {
+            nw = room_w;
+            nh = nw / k;
+        }
+        if (nh > room_h) {
+            nh = room_h;
+            nw = nh * k;
+        }
+    }
+    return .{ if (west) fx - nw else fx, if (north) fy - nh else fy, nw, nh };
+}
+
+const testing = std.testing;
+
+test "an aspect fits inside the photo, around where the crop was" {
+    const r = fitAspect(.{ 0, 0, 1, 1 }, 1, .{ 3, 2 });
+    try testing.expectApproxEqAbs(2.0 / 3.0, r[2], 1e-9);
+    try testing.expectApproxEqAbs(1, r[3], 1e-9);
+    try testing.expectApproxEqAbs(1.0 / 6.0, r[0], 1e-9);
+}
+
+test "a moved crop stays on the photo" {
+    const r = moved(.{ 0.5, 0.5, 0.4, 0.4 }, 1, -1);
+    try testing.expectApproxEqAbs(0.6, r[0], 1e-9);
+    try testing.expectEqual(0, r[1]);
+}
+
+test "resizing keeps the opposite corner, and the ratio when there is one" {
+    const free = resized(.{ 0.2, 0.2, 0.4, 0.4 }, .se, 0.1, -0.1, null, .{ 3, 2 });
+    try testing.expectEqual(0.2, free[0]);
+    try testing.expectApproxEqAbs(0.5, free[2], 1e-9);
+    try testing.expectApproxEqAbs(0.3, free[3], 1e-9);
+    const held = resized(.{ 0.2, 0.2, 0.4, 0.4 }, .nw, -0.1, 0, 1.5, .{ 3, 2 });
+    try testing.expectApproxEqAbs(0.6, held[0] + held[2], 1e-9);
+    try testing.expectApproxEqAbs(held[2], held[3], 1e-9);
+}

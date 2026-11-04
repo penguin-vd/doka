@@ -11,7 +11,7 @@ L more. Nothing here is decided; pick from it.
 - Switching photos: no stale crop, no waiting behind thumbnails; long folders scroll smoothly.
 - Claude's tools: `photo` on set_edits/undo (refused if another photo is open), straighten's
   direction fixed and documented (+ clockwise), crop by `aspect` + `focus`, export `folder`, `name`
-  and an export-only crop, the Keep / Undo bar shows the last change and a count, list_photos
+  and an export-only crop, list_photos
   `edited_only` with who changed it last, get_view measures clipping and a histogram.
 - Starter shaders: bloom, light-leak, clarity (local contrast), dehaze, besides split-tone.
 
@@ -42,11 +42,7 @@ The photos are also in Immich. Endpoints below are from Immich's OpenAPI spec (`
 
 ## Editing
 
-- **Masks** (L; SPEC.md puts masks out of v1). In steps:
-  - a sky mask from colour, brightness and position, with a feathered edge (M): "darken only the sky";
-  - masks from the v2 depth map: near / far (M once depth exists);
-  - subject masks need a segmentation model through ONNX Runtime, like depth (L).
-  Each mask would be a recipe entry `{mask, edits}` running the develop pass a second time.
+- **Masks** (L; SPEC.md puts masks out of v1): see `docs/masks-plan.md`.
 - **Depth** (L, SPEC.md v2): Depth Anything V2 Small through ONNX Runtime's C API; `needs: ["depth"]`
   and `u_depth` are already wired (flat for now). Fog, haze, grain by distance.
 - **Presets** (S–M, SPEC.md v2): save a recipe's look-and-colour part, apply it in one click.
@@ -71,9 +67,6 @@ The photos are also in Immich. Endpoints below are from Immich's OpenAPI spec (`
 
 ## Speed and size
 
-- **Idle memory** (M): ~180 MB for the app plus WebKit's own processes; SPEC.md's 150 MB isn't
-  reachable with a WebKit window and the NVIDIA driver. Could drop the neighbour cache after a
-  minute idle (-38 MB) and the full-size photo when zoomed out.
 - **First thumbnails from EXIF** (S): the camera's embedded thumbnail shows at once, the real one
   replaces it.
 
@@ -84,8 +77,8 @@ The photos are also in Immich. Endpoints below are from Immich's OpenAPI spec (`
 
 ## Not tested by Claude
 
-Only through a real window: the open-folder dialog (GTK portal on Hyprland), dragging sliders and
-crop handles with the mouse, wheel zoom with a real mouse.
+The window itself: Claude can't open one, so the owner tries everything visible. Claude tests what
+has no window: `src/app/app.zig`'s state, the pipeline on the GPU, exports and their metadata.
 
 ## Notes
 

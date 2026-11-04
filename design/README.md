@@ -5,10 +5,10 @@ Live canvas: https://claude.ai/artifact/FYDdyBbwBPCpK2RYcn4Mbn
 These files are the canvas's source, for reference only. They use the canvas's own component format, so they won't open as plain web pages. Read them for layout, colours, spacing and type.
 
 - `editor.dc.html`: the main editor. A folder sidebar with thumbnails, the photo in the middle, and the tool panel on the right.
-- `claude-editing.dc.html`: Claude editing the open photo, with the Keep / Undo bar and before/after.
+- `claude-editing.dc.html`: Claude editing the open photo, with before/after, and a Keep / Undo bar the app no longer has.
 - `export.dc.html`: the export dialog with the metadata and GPS options.
 
-The look in short: a dark, neutral grey UI so photo colours read true. IBM Plex Sans for UI text and IBM Plex Mono for numbers. One amber accent (`#E8B04B`), 44 px touch targets, and real buttons and inputs.
+**The app's look has since moved on; the CSS in `src/main.zig` is the source of truth.** The photo is the only colour on screen: true neutral greys, white for "on" and "changed", IBM Plex Sans throughout, and controls sized for a mouse. These files still show the earlier amber look and 44 px touch targets.
 
 **The design is older than the spec.** It still shows a "Filters" tab and a recipe panel, and Claude's activity panel describes a CLI. Follow `SPEC.md`:
 

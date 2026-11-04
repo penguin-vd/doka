@@ -95,7 +95,7 @@ pub fn parse(arena: std.mem.Allocator, json: []const u8) !Recipe {
 }
 
 /// `patch` merged into `base`: objects field by field, anything else replaced, null back to the
-/// default. How `set_edits` and the page change a recipe without sending all of it.
+/// default. How `set_edits` and the window change a recipe without sending all of it.
 pub fn apply(arena: std.mem.Allocator, base: Recipe, patch: std.json.Value) !Recipe {
     const full = try std.json.Stringify.valueAlloc(arena, base, .{});
     var merged = try std.json.parseFromSliceLeaky(std.json.Value, arena, full, .{});

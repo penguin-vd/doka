@@ -10,7 +10,7 @@ pub const Linear = struct {
     // Upright size of the original, before any shrinking.
     full_width: u32,
     full_height: u32,
-    // f16 bit patterns, width * height * 3; WebGL's HALF_FLOAT takes them as a Uint16Array.
+    // f16 bit patterns, width * height * 3; OpenGL's HALF_FLOAT takes them as they are.
     rgb: []u16,
 
     pub fn deinit(self: *Linear, gpa: std.mem.Allocator) void {

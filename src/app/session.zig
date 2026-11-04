@@ -1,5 +1,4 @@
-//! One photo's edits while the app runs: the recipe, its undo and redo, and Claude's change waiting
-//! for Keep or Undo. The recipe is kept as its JSON; history is in memory only (SPEC.md).
+//! One photo's edits while the app runs: the recipe, its undo and redo. The recipe is kept as its JSON; history is in memory only (SPEC.md).
 const std = @import("std");
 const core = @import("photo-core");
 const Recipe = core.Recipe;
@@ -14,12 +13,6 @@ undo_stack: std.ArrayList([]u8) = .empty,
 redo_stack: std.ArrayList([]u8) = .empty,
 // Edits that arrive with the same gesture (one slider drag) undo together.
 gesture: u64 = 0,
-// The recipe before Claude's change, and what Claude said it changed, until Keep or Undo.
-claude_base: ?[]u8 = null,
-claude_note: std.ArrayList(u8) = .empty,
-// The undo stack's depth when Claude's change began, and how many changes since.
-claude_depth: usize = 0,
-claude_changes: u32 = 0,
 
 pub fn init(gpa: std.mem.Allocator, start: Recipe) !Session {
     return .{ .gpa = gpa, .json = try start.writeAlloc(gpa) };
@@ -31,8 +24,6 @@ pub fn deinit(s: *Session) void {
     for (s.redo_stack.items) |j| s.gpa.free(j);
     s.undo_stack.deinit(s.gpa);
     s.redo_stack.deinit(s.gpa);
-    if (s.claude_base) |b| s.gpa.free(b);
-    s.claude_note.deinit(s.gpa);
 }
 
 /// The current recipe; its strings live in `arena`.
@@ -47,8 +38,6 @@ pub const Change = struct {
     gesture: u64 = 0,
     // Seconds since the epoch, for updatedAt.
     now: u64,
-    // Claude's one-line summary.
-    note: []const u8 = "",
 };
 
 /// Applies a change; the new recipe's strings live in `arena`.
@@ -60,19 +49,6 @@ pub fn change(s: *Session, arena: std.mem.Allocator, ch: Change) !Recipe {
     const next = try r.writeAlloc(s.gpa);
     errdefer s.gpa.free(next);
 
-    if (ch.by == .claude) {
-        if (s.claude_base == null) {
-            s.claude_base = try s.gpa.dupe(u8, s.json);
-            s.claude_depth = s.undo_stack.items.len;
-            s.claude_changes = 0;
-        }
-        s.claude_changes += 1;
-        // The bar says what Claude did last, and how many changes Undo would take back.
-        if (ch.note.len > 0) {
-            s.claude_note.clearRetainingCapacity();
-            try s.claude_note.appendSlice(s.gpa, ch.note);
-        }
-    }
     if (ch.gesture == 0 or ch.gesture != s.gesture) {
         try s.pushHistory(&s.undo_stack, s.json);
         for (s.redo_stack.items) |j| s.gpa.free(j);
@@ -104,7 +80,6 @@ pub fn undo(s: *Session) !bool {
     try s.pushHistory(&s.redo_stack, s.json);
     s.json = prev;
     s.gesture = 0;
-    s.dropClaude();
     return true;
 }
 
@@ -114,34 +89,4 @@ pub fn redo(s: *Session) !bool {
     s.json = next;
     s.gesture = 0;
     return true;
-}
-
-pub fn claudePending(s: *const Session) bool {
-    return s.claude_base != null;
-}
-
-/// Keep: Claude's change stays, the bar goes.
-pub fn keepClaude(s: *Session) void {
-    s.dropClaude();
-}
-
-/// Undo on the bar: back to before Claude's change, however many steps it took, as one undo;
-/// redo brings Claude's version back.
-pub fn undoClaude(s: *Session) !bool {
-    const base = s.claude_base orelse return false;
-    s.claude_base = null;
-    s.claude_note.clearRetainingCapacity();
-    for (s.redo_stack.items) |j| s.gpa.free(j);
-    s.redo_stack.clearRetainingCapacity();
-    try s.pushHistory(&s.redo_stack, s.json);
-    while (s.undo_stack.items.len > @min(s.claude_depth, s.undo_stack.items.len)) s.gpa.free(s.undo_stack.pop().?);
-    s.json = base;
-    s.gesture = 0;
-    return true;
-}
-
-fn dropClaude(s: *Session) void {
-    if (s.claude_base) |b| s.gpa.free(b);
-    s.claude_base = null;
-    s.claude_note.clearRetainingCapacity();
 }

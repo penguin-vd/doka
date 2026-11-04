@@ -17,8 +17,8 @@ if echo "$staged" | grep -qv '^docs/' && ! echo "$staged" | grep -qx 'docs/chang
     exit 1
 fi
 
-if echo "$staged" | grep -qE '\.zig$|^build\.zig\.zon$|^ui/|^scripts/strip-types\.mjs$'; then
+if echo "$staged" | grep -qE '\.zig$|^build\.zig\.zon$|\.glsl$'; then
     # Quiet unless it fails: the test runner lists every test.
     out=$(zig build test 2>&1) || { echo "$out" | tail -n 40; echo "pre-commit: tests failed" >&2; exit 1; }
-    out=$(zig build probe 2>&1) || { echo "$out" | tail -n 40; echo "pre-commit: no WebGL2 float render targets, or the app crashed" >&2; exit 1; }
+    out=$(zig build probe 2>&1) || { echo "$out" | tail -n 40; echo "pre-commit: the pipeline tests failed on the GPU" >&2; exit 1; }
 fi

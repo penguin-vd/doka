@@ -6,11 +6,10 @@ and exports that keep every bit of the camera's metadata. `SPEC.md` is the full 
 
 ## Build and run
 
-Needs Zig 0.16.0, Node 22 (only to build: it strips the UI's TypeScript), and the system's
-`libvips`, `gtk3` and `webkit2gtk-4.1`.
+Needs Zig 0.16.0 and the system's `libvips`, `gtk4` and OpenGL.
 
 ```sh
-zig build -Doptimize=ReleaseFast     # zig-out/bin/doka, about 1.3 MB
+zig build -Doptimize=ReleaseSafe     # zig-out/bin/doka
 ./zig-out/bin/doka [folder]          # opens the folder, or the last one
 scripts/starter-looks.py             # twelve film looks into ~/.config/doka/looks (once)
 scripts/setup.sh                     # for development: the git pre-commit (tests and the GPU probe)
@@ -24,8 +23,8 @@ While the app is open it serves MCP at `http://127.0.0.1:7777/mcp`. Once:
 claude mcp add --transport http photo http://127.0.0.1:7777/mcp
 ```
 
-Then ask in Claude Code, for example "make it more film-like". Claude's changes show with a note
-and Keep / Undo. It can also open other photos, export, and write shaders (`save_shader`) or bake
+Then ask in Claude Code, for example "make it more film-like". Claude's changes apply live and
+Ctrl+Z undoes them. It can also open other photos, export, and write shaders (`save_shader`) or bake
 its colour work into a new look (`bake_look`). If the app wasn't open, open it and run `/mcp`.
 
 ## Where things are
@@ -54,4 +53,4 @@ its colour work into a new look (`bake_look`). If the app wasn't open, open it a
 
 The starter looks are converted from the RawTherapee Film Simulation Collection (CC BY-SA 4.0;
 Pat David, Pavlov Dmitry, Michael Ezra). They're downloaded by `scripts/starter-looks.py`, not
-kept in this repository; a `CREDITS.txt` goes beside them. The `webview` library is MIT.
+kept in this repository; a `CREDITS.txt` goes beside them.

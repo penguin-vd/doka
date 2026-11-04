@@ -64,6 +64,16 @@ pub const Pixels = struct {
     },
 };
 
+/// A small JPEG of 8-bit RGB, with no metadata: what Claude sees. Free with `vips.freeMemory`.
+pub fn jpegBytes(rgb: []const u8, width: u32, height: u32, quality: c_int) ![]u8 {
+    const img = c.vips_image_new_from_memory_copy(rgb.ptr, rgb.len, @intCast(width), @intCast(height), 3, .uchar) orelse return vips.fail();
+    defer vips.unref(img);
+    var buf: ?[*]u8 = null;
+    var len: usize = 0;
+    try vips.check(c.vips_image_write_to_buffer(img, ".jpg", &buf, &len, "Q", quality, "keep", vips.keep_none, vips.end));
+    return buf.?[0..len];
+}
+
 pub fn save(io: Io, gpa: std.mem.Allocator, source: [:0]const u8, pixels: Pixels, options: Options, out_path: [:0]const u8) !void {
     if (samePath(source, out_path)) return error.WouldOverwriteOriginal;
     const bytes: []const u8, const format: vips.Format = switch (pixels.data) {

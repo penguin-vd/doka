@@ -18,6 +18,8 @@ pub const Patch = struct {
 
 const Tag = enum(u16) {
     orientation = 0x0112,
+    date_time = 0x0132,
+    date_original = 0x9003,
     exif_ifd = 0x8769,
     gps_ifd = 0x8825,
     colour_space = 0xA001,
@@ -162,6 +164,72 @@ const Tiff = struct {
 
 /// The export's EXIF block: the original's (`exif-data`, with or without the "Exif\0\0" header),
 /// patched. Returns the TIFF part, without the header.
+/// The day a JPEG was taken as "2026-08-07", from its first bytes: only EXIF is looked at (the
+/// file's own date changes when it's copied). Null without a usable date.
+pub fn dayTaken(jpeg: []const u8) ?[10]u8 {
+    if (!std.mem.startsWith(u8, jpeg, "\xff\xd8")) return null;
+    var at: usize = 2;
+    while (at + 4 <= jpeg.len and jpeg[at] == 0xff) {
+        const marker = jpeg[at + 1];
+        if (marker == 0xda or marker == 0xd9) return null;
+        const len = std.mem.readInt(u16, jpeg[at + 2 ..][0..2], .big);
+        const start = at + 4;
+        const end = @min(at + 2 + len, jpeg.len);
+        if (marker == 0xe1 and end > start and std.mem.startsWith(u8, jpeg[start..end], header)) return tiffDay(jpeg[start + header.len .. end]) catch null;
+        at += 2 + @as(usize, len);
+    }
+    return null;
+}
+
+fn tiffDay(bytes: []const u8) !?[10]u8 {
+    if (bytes.len < 8) return error.BadExif;
+    const endian: std.builtin.Endian = if (std.mem.eql(u8, bytes[0..2], "II")) .little else if (std.mem.eql(u8, bytes[0..2], "MM")) .big else return error.BadExif;
+    // Only read from: the fields that write aren't called.
+    const t: Tiff = .{ .bytes = @constCast(bytes), .endian = endian };
+    const ifd0 = try t.u32At(4);
+    if (try t.entry(ifd0, .exif_ifd)) |at| if (try t.entry(try t.u32At(at + 8), .date_original)) |e| {
+        if (try dateAt(t, e)) |d| return d;
+    };
+    if (try t.entry(ifd0, .date_time)) |e| return dateAt(t, e);
+    return null;
+}
+
+// "2026:08:07 14:30:00" to "2026-08-07"; cameras without a set clock write zeros or spaces.
+fn dateAt(t: Tiff, entry: usize) !?[10]u8 {
+    const off, const size = try t.valueSpan(entry);
+    if (size < 10 or off + 10 > t.bytes.len) return null;
+    const s = t.bytes[off..][0..10];
+    if (s[4] != ':' or s[7] != ':') return null;
+    for ([_]usize{ 0, 1, 2, 3, 5, 6, 8, 9 }) |i| if (!std.ascii.isDigit(s[i])) return null;
+    if (std.mem.eql(u8, s[0..4], "0000") or std.mem.eql(u8, s[5..7], "00")) return null;
+    var out: [10]u8 = s.*;
+    out[4] = '-';
+    out[7] = '-';
+    return out;
+}
+
+test "dayTaken finds the date in a JPEG's EXIF, and refuses a clock that was never set" {
+    const build = struct {
+        fn jpeg(buf: []u8, date: *const [19]u8) []u8 {
+            // II*, IFD0 at 8 with one entry: DateTime, 20 ASCII bytes at offset 26.
+            const tiff = "II*\x00\x08\x00\x00\x00\x01\x00\x32\x01\x02\x00\x14\x00\x00\x00\x1a\x00\x00\x00\x00\x00\x00\x00".*;
+            var w: std.Io.Writer = .fixed(buf);
+            w.writeAll("\xff\xd8\xff\xe0\x00\x04\x00\x00\xff\xe1") catch unreachable;
+            w.writeInt(u16, 2 + header.len + tiff.len + 20, .big) catch unreachable;
+            w.writeAll(header) catch unreachable;
+            w.writeAll(&tiff) catch unreachable;
+            w.writeAll(date) catch unreachable;
+            w.writeByte(0) catch unreachable;
+            return w.buffered();
+        }
+    };
+    var buf: [128]u8 = undefined;
+    try std.testing.expectEqualStrings("2026-08-07", &dayTaken(build.jpeg(&buf, "2026:08:07 14:30:00")).?);
+    try std.testing.expectEqual(null, dayTaken(build.jpeg(&buf, "0000:00:00 00:00:00")));
+    try std.testing.expectEqual(null, dayTaken("\xff\xd8\xff\xda"));
+    try std.testing.expectEqual(null, dayTaken("not a jpeg"));
+}
+
 pub fn prepare(gpa: std.mem.Allocator, original: []const u8, patch: Patch) ![]u8 {
     const tiff_bytes = if (std.mem.startsWith(u8, original, header)) original[header.len..] else original;
     if (tiff_bytes.len < 8) return error.BadExif;
