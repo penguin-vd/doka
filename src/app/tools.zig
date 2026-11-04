@@ -33,9 +33,11 @@ pub const instructions =
     \\- Asked to choose photos: look through the folder with contact_sheet (30 at a time is about 300 px each),
     \\  each numbered with its position; everywhere a tool takes photos, those numbers work. Then compare
     \\  the candidates on a sheet of 6 to 12. Take one of a burst, and variety over near-copies. Each line has
-    \\  a sharpness number: only worth comparing between shots of the same scene. Keep your choice with
+    \\  a sharpness number: of the sharpest part, only worth comparing within a scene. Keep your choice with
     \\  pick_photos; it stays, and the user sees it. Don't edit what you chose unless asked.
-    \\- Edit one photo at a time: open_photo it, then set_edits as above.
+    \\- Edit one photo at a time: open_photo it, then set_edits as above. Change one mask with edit_mask, not the whole list.
+    \\- A screenshot is small. Before you call something sharp or clean, or a mask's edge good, look with get_view zoom; check a
+    \\  mask you placed by eye with show_mask; and judge a finished edit with get_view compare.
     \\- Afterwards, tell the user briefly what you changed.
 ;
 
@@ -43,8 +45,8 @@ pub const instructions =
 pub const definitions =
     \\[
     \\{"name":"get_view","title":"See the open photo",
-    \\ "description":"What the user sees now: the folder, the open photo (name, camera, lens, exposure), the active tab, the photo's current edits (only values that differ from the default), a screenshot of the rendered photo, and its tones measured at full screenshot size: % of clipped highlights (any channel at 255, and per channel), % of crushed shadows, mean brightness and a 16-bin histogram. Give show_mask (a mask's position in the recipe's masks, from 0) to see that mask painted red in the screenshot, to check where it is; nothing in the photo changes.",
-    \\ "inputSchema":{"type":"object","properties":{"show_mask":{"type":"integer","minimum":0}}}},
+    \\ "description":"What the user sees now: the folder, the open photo (name, camera, lens, exposure), the active tab, the photo's current edits (only values that differ from the default), a screenshot of the rendered photo, and its tones measured at full screenshot size: % of clipped highlights (any channel at 255, and per channel), % of crushed shadows, mean brightness and a 16-bin histogram. Give show_mask (a mask's position in the recipe's masks, from 0) to see that mask painted red in the screenshot, to check where it is; nothing in the photo changes. Give zoom to judge what a small picture hides: focus, skin, noise, a mask's edge (with show_mask). Give compare to judge the edit against the original. Neither measures tones.",
+    \\ "inputSchema":{"type":"object","properties":{"show_mask":{"type":"integer","minimum":0},"zoom":{"type":"object","description":"Look in detail: at [x,y], 0..1 of the screenshot you saw (the photo as cropped), and size, how much to show as a share of its long edge (0.2 by default; about 0.1 for a face). Up to 100%, the photo's own pixels.","properties":{"at":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2},"size":{"type":"number","minimum":0.01,"maximum":1}},"required":["at"]},"compare":{"type":"boolean","description":"The original on the left, with the edits on the right, the same crop and place"}}}},
     \\{"name":"set_edits","title":"Edit the open photo",
     \\ "description":"Changes the open photo's edits, live. Give only the fields to change; everything else stays. Set a field to its default (0, or look name 'none') to remove it. Give `photo` (the name get_view shows) and nothing changes if another photo is open by now. Returns the new view with a screenshot. Ranges: exposure -5..5 (stops); temperature, tint, contrast, highlights, shadows, whites, blacks, vibrance, saturation -100..100 (whites and blacks move only the ends of the tones; vibrance goes easy on what's vivid and on skin); curve [[in,out],...] 0..1, up to 12, the whole photo's tone curve in display values, before the look; look.strength, halation, vignette, grain.amount, grain.size, detail.sharpen, detail.noise 0..100; colour bands (reds, oranges, yellows, greens, blues, purples) hue/sat/light -100..100; crop.rect [x,y,w,h] 0..1 of the rotated photo, crop.rotate 0/90/180/270 (clockwise), crop.straighten -45..45 degrees (+ turns the photo clockwise, - counter-clockwise), crop.aspect original|free|1:1|4:5|3:2|16:9 (literal: 4:5 is portrait). Give crop.aspect and/or crop.focus [x,y] (0..1, the point to keep in the middle) without a rect and the app fits the biggest crop of that aspect around it. shaders replaces the whole list: [{name, strength 0..100, enabled, params:{name:value}}]. masks also replaces the whole list, up to 8: part of the photo with edits of its own, applied after the look, in order; [] removes them. Each mask: name (shown to the user, like 'Sky'), enabled, shape whole|linear|radial, invert (everything but what's selected), edits and colour as above, blur 0..100 (a lens-like blur, up to 2.5% of the long edge; what's outside the mask doesn't bleed in), and what selects: linear: from [x,y] (full effect) and to [x,y] (fades to nothing there); radial: centre [x,y], radius [rx,ry] as shares of the photo's width and height, feather 0..100 (% of the radius it fades over, inwards from the edge); any shape: brightness {min,max} 0..100 (0 black, 100 white) and hue {centre, width} in degrees (reds 25, oranges 60, yellows 100, greens 145, blues 250, purples 315; width to each side, 0 = any colour; greys never match a hue). Limits read the original photo, so other edits don't move them. Mask coordinates are 0..1 of the whole photo as decoded, upright, (0,0) top-left: NOT of the crop or rotated view, so with a crop or rotation in the recipe convert from what the screenshot shows.",
     \\ "inputSchema":{"type":"object","properties":{
@@ -60,6 +62,9 @@ pub const definitions =
     \\  "masks":{"type":"array","maxItems":8,"items":{"type":"object","properties":{"name":{"type":"string"},"enabled":{"type":"boolean"},"shape":{"type":"string","enum":["whole","linear","radial"]},"from":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2},"to":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2},"centre":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2},"radius":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2},"feather":{"type":"number","minimum":0,"maximum":100},"brightness":{"type":"object","properties":{"min":{"type":"number","minimum":0,"maximum":100},"max":{"type":"number","minimum":0,"maximum":100}}},"hue":{"type":"object","properties":{"centre":{"type":"number","minimum":0,"maximum":360},"width":{"type":"number","minimum":0,"maximum":180}}},"invert":{"type":"boolean"},"blur":{"type":"number","minimum":0,"maximum":100},"edits":{"type":"object"},"colour":{"type":"object"}}}},
     \\  "crop":{"type":"object","properties":{"aspect":{"type":"string"},"focus":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2},"straighten":{"type":"number"},"rotate":{"type":"number"},"flip":{"type":"boolean"},"rect":{"type":"array","items":{"type":"number"},"minItems":4,"maxItems":4}}},
     \\  "photo":{"type":"string","description":"The photo you mean to edit; refused if another one is open"}}}},
+    \\{"name":"edit_mask","title":"Change one mask",
+    \\ "description":"Changes one mask of the open photo, and leaves the others alone: only the fields given change, edits and colour field by field. mask is its position from 0, or its name. Fields as a mask in set_edits; a subject's outline changes through mask_subject. remove true takes the mask away. show true paints it red in the answer. Returns the new view.",
+    \\ "inputSchema":{"type":"object","properties":{"mask":{"type":["integer","string"],"description":"Its position from 0, or its name"},"remove":{"type":"boolean"},"show":{"type":"boolean"},"name":{"type":"string"},"enabled":{"type":"boolean"},"from":{"type":"array"},"to":{"type":"array"},"centre":{"type":"array"},"radius":{"type":"array"},"feather":{"type":"number"},"brightness":{"type":"object"},"hue":{"type":"object"},"invert":{"type":"boolean"},"blur":{"type":"number"},"edits":{"type":"object"},"colour":{"type":"object"},"photo":{"type":"string","description":"The photo you mean to edit; refused if another one is open"}},"required":["mask"]}},
     \\{"name":"mask_subject","title":"Mask a person or object",
     \\ "description":"Finds a person or object from points on it, follows its outline, and adds it as a mask with these edits (or changes the mask at position `mask`). Takes a second or two the first time on a photo, far less after. Returns the view with that mask painted red: check it, and call again with `mask` and more points if it took too much or too little. Points are [x,y], 0..1 of the whole photo as decoded, upright, (0,0) top-left: NOT of the crop or rotated view. Everything else as a mask in set_edits. Needs scripts/subject-model.py to have been run once.",
     \\ "inputSchema":{"type":"object","properties":{"points":{"type":"array","description":"Points on the subject","items":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2}},"exclude":{"type":"array","description":"Points on what doesn't belong","items":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2}},"mask":{"type":"integer","minimum":0,"description":"Change this mask, from 0, instead of adding one"},"name":{"type":"string","description":"Shown to the user, like 'Portrait'"},"invert":{"type":"boolean"},"blur":{"type":"number","minimum":0,"maximum":100},"brightness":{"type":"object"},"hue":{"type":"object"},"edits":{"type":"object"},"colour":{"type":"object"},"photo":{"type":"string","description":"The photo you mean to edit; refused if another one is open"}},"required":["points"]}},
@@ -70,7 +75,7 @@ pub const definitions =
     \\ "description":"The open folder's photos, in order, each with whether it has edits (and for edited ones, whether the user or Claude changed it last, and when).",
     \\ "inputSchema":{"type":"object","properties":{"edited_only":{"type":"boolean","description":"Only the photos with edits"}}}},
     \\{"name":"contact_sheet","title":"See many photos at once",
-    \\ "description":"Up to 30 photos in one picture, drawn with their edits, each marked with its position in the folder; and a line per photo with its name, time, exposure, a sharpness number (of its sharpest part; higher is sharper, and only worth comparing between shots of the same scene), who edited it and whether it is picked. The fewer you ask for, the bigger they are: 20 is good for looking through a folder, 6 to 12 for comparing faces or sharpness. Give photos, or walk the folder from start (a position; 1 by default) for count photos (20 by default), only those edited, unedited or picked if you ask. The text says what start to use next. Nothing changes, and the open photo stays open.",
+    \\ "description":"Up to 30 photos in one picture, drawn with their edits, each marked with its position in the folder; and a line per photo with its name, time, exposure, a sharpness number (of its sharpest part, whatever that is: not necessarily the face. Higher is sharper, only worth comparing between shots of the same scene; get_view zoom tells you for sure), who edited it and whether it is picked. The fewer you ask for, the bigger they are: 20 is good for looking through a folder, 6 to 12 for comparing faces or sharpness. Give photos, or walk the folder from start (a position; 1 by default) for count photos (20 by default), only those edited, unedited or picked if you ask. The text says what start to use next. Nothing changes, and the open photo stays open.",
     \\ "inputSchema":{"type":"object","properties":{"photos":{"description":"Positions or names; or \"picked\" for the folder's picks, or \"selected\" for what the user Ctrl-clicked","anyOf":[{"type":"array","items":{"type":["integer","string"]}},{"type":"string","enum":["picked","selected"]}]},"start":{"type":"integer","minimum":1},"count":{"type":"integer","minimum":1,"maximum":30},"only":{"type":"string","enum":["edited","unedited","picked"]}}}},
     \\{"name":"pick_photos","title":"Keep a choice of photos",
     \\ "description":"Makes these photos the folder's picks, in place of any before: how to keep what you chose. Picks stay after a restart and when the user clicks around; each has a mark in the sidebar, and its Picked filter shows only them. The user can change them with P. An empty list clears them. Nothing else changes: nothing is edited. Use \"picked\" for photos in contact_sheet or export.",
@@ -158,6 +163,7 @@ fn dispatch(app: *App, a: std.mem.Allocator, call: *Mcp.Call, args: std.json.Val
             const s = app.currentSession() orelse return error.NoPhoto;
             if (i >= (try s.recipe(a)).masks.len) return error.NoSuchMask;
         }
+        if (args == .object and (args.object.get("zoom") != null or args.object.get("compare") != null)) return closeupView(app, a, call, args, show);
         return viewShowing(app, a, call, null, show);
     }
     if (eql(name, "list_photos")) return listPhotos(app, a, call, if (args == .object) if (args.object.get("edited_only")) |v| v == .bool and v.bool else false else false);
@@ -180,6 +186,7 @@ fn dispatch(app: *App, a: std.mem.Allocator, call: *Mcp.Call, args: std.json.Val
         return view(app, a, call, null);
     }
     if (eql(name, "mask_subject")) return maskSubject(app, a, call, args);
+    if (eql(name, "edit_mask")) return editMask(app, a, call, args);
     if (eql(name, "open_photo")) {
         const f = &(app.folder orelse return error.NoFolder);
         const position: ?std.json.Value = if (args == .object) args.object.get("position") else null;
@@ -250,6 +257,70 @@ fn appendPoints(a: std.mem.Allocator, list: *std.ArrayList([3]f32), v: ?std.json
         };
         try list.append(a, point);
     }
+}
+
+fn closeupView(app: *App, a: std.mem.Allocator, call: *Mcp.Call, args: std.json.Value, show: ?usize) !void {
+    const index = app.current orelse return error.NoPhoto;
+    var request: App.Closeup = .{ .call = call, .text = undefined, .index = index, .show_mask = show };
+    if (args.object.get("compare")) |v| request.compare = v == .bool and v.bool;
+    if (args.object.get("zoom")) |zoom| {
+        if (zoom != .object) return error.BadArguments;
+        const at = zoom.object.get("at") orelse return error.BadArguments;
+        if (at != .array or at.array.items.len != 2) return error.BadArguments;
+        var point: [2]f32 = undefined;
+        for (at.array.items, &point) |item, *o| o.* = std.math.clamp(try number(item), 0, 1);
+        request.at = point;
+        if (zoom.object.get("size")) |v| request.size = try number(v);
+    }
+    var out: Io.Writer.Allocating = .init(a);
+    if (request.compare) try out.writer.writeAll("On the left the original, on the right with the edits.\n");
+    if (request.at != null) try out.writer.print("In detail, around [{d:.2},{d:.2}] of the photo as cropped.\n", .{ request.at.?[0], request.at.?[1] });
+    try writeView(app, a, &out.writer);
+    request.text = try app.gpa.dupe(u8, out.written());
+    errdefer app.gpa.free(request.text);
+    return app.hooks.closeup.?(request);
+}
+
+fn number(v: std.json.Value) !f32 {
+    return switch (v) {
+        .integer => |i| @floatFromInt(i),
+        .float => |f| @floatCast(f),
+        else => error.BadArguments,
+    };
+}
+
+fn editMask(app: *App, a: std.mem.Allocator, call: *Mcp.Call, args: std.json.Value) !void {
+    const s = app.currentSession() orelse return error.NoPhoto;
+    if (args != .object) return error.BadArguments;
+    if (!try samePhoto(app, a, call, args)) return;
+    const r = try s.recipe(a);
+    const which = args.object.get("mask") orelse return error.BadArguments;
+    const index: usize = switch (which) {
+        .integer => |i| if (i >= 0 and i < r.masks.len) @intCast(i) else return error.NoSuchMask,
+        .string => |name| for (r.masks, 0..) |m, i| {
+            if (std.ascii.eqlIgnoreCase(m.name, name)) break i;
+        } else return error.NoSuchMask,
+        else => return error.BadArguments,
+    };
+    var fields = try args.object.clone(a);
+    for ([_][]const u8{ "mask", "photo", "show" }) |key| _ = fields.orderedRemove(key);
+    const remove = fields.fetchOrderedRemove("remove");
+    // A subject's picture and the points that found it go together: mask_subject changes them.
+    for ([_][]const u8{ "file", "points", "shape" }) |key| if (fields.get(key) != null) return error.BadArguments;
+    try validate(Recipe.Mask, .{ .object = fields });
+    var list = try std.json.parseFromSliceLeaky(std.json.Value, a, try std.json.Stringify.valueAlloc(a, r.masks, .{}), .{});
+    if (remove != null and remove.?.value == .bool and remove.?.value.bool) {
+        _ = list.array.orderedRemove(index);
+    } else {
+        try Recipe.mergeInto(a, &list.array.items[index], .{ .object = fields });
+    }
+    var patch: std.json.ObjectMap = .empty;
+    try patch.put(a, "masks", list);
+    _ = try s.change(a, .{ .patch = .{ .object = patch }, .by = .claude, .now = app.now() });
+    app.changed();
+    app.hooks.edited.?();
+    const shown = if (args.object.get("show")) |v| v == .bool and v.bool else false;
+    return viewShowing(app, a, call, null, if (shown and remove == null) index else null);
 }
 
 fn maskSubject(app: *App, a: std.mem.Allocator, call: *Mcp.Call, args: std.json.Value) !void {

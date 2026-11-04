@@ -248,6 +248,19 @@ pub fn installSource(p: *Pipeline, t: c_uint, width: c_int, height: c_int) !void
     p.height = height;
 }
 
+/// Gives back the photo and its render targets: for a pipeline that was holding a full-size one.
+pub fn release(p: *Pipeline) void {
+    if (p.src != 0) gl.glDeleteTextures(1, &p.src);
+    p.src = 0;
+    for ([_]*?Target{ &p.a, &p.b, &p.c, &p.glow_a, &p.glow_b }) |slot| if (slot.*) |*old| {
+        old.free();
+        slot.* = null;
+    };
+    p.width = 0;
+    p.height = 0;
+    p.developed = null;
+}
+
 /// The whole photo at once.
 pub fn setSource(p: *Pipeline, width: c_int, height: c_int, rgb: [*]const u16) !void {
     const t = newSource(width, height);

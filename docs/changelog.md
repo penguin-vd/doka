@@ -101,6 +101,9 @@ Changed for what someone would notice, a line under Decided for a choice whose r
 - Picks: Claude's pick_photos or P keeps a folder's chosen photos. They stay after a restart and when
   clicking around, have a mark and a Picked filter in the sidebar, and Ctrl+E on that filter exports them.
 - Reopening the open folder right after an edit no longer loses that photo's edited mark.
+- Claude can check its own work: get_view looks at any part of the photo at its own pixels, with a mask
+  painted on it if asked, and shows the original beside the edit. edit_mask changes one mask without
+  sending them all. The sharpness number no longer changes with the size of the sheet.
 
 ### Decided
 
@@ -181,3 +184,5 @@ Changed for what someone would notice, a line under Decided for a choice whose r
 - Picks are a file of their own, not part of a recipe: being picked isn't an edit, and clicking a photo
   must not lose them, as it does a Ctrl-click selection.
 - No bulk edit: the owner edits photos one at a time with Claude.
+- A closer look decodes the photo at full size in the contact sheet's pipeline and gives its big render
+  targets back afterwards: looking at a detail shouldn't hold half a gigabyte of the GPU's memory.

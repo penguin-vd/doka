@@ -226,7 +226,8 @@ Open the app, open Claude Code, and ask: "make it more film-like." Claude sees t
 
 | Tool | What it does |
 | --- | --- |
-| `get_view` | What you see right now: folder, open photo, active tab, current edits, camera and lens summary, plus a screenshot of the rendered photo, returned as an image |
+| `get_view` | What you see right now: folder, open photo, active tab, current edits, camera and lens summary, plus a screenshot of the rendered photo, returned as an image. Can also show part of the photo at its own pixels, or the original beside the edit |
+| `edit_mask` | Changes one mask, by position or name; the rest stays |
 | `set_edits` | Changes sliders, look, colour, grain, halation or crop live (only the fields given); returns the new view |
 | `open_photo` | Switches to another photo by name, or next / previous |
 | `list_photos` | Photos in the open folder, with an edited flag |

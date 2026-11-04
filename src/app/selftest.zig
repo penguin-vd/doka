@@ -1023,6 +1023,10 @@ fn stubSelected(_: std.mem.Allocator) anyerror![]const u32 {
 
 fn stubPicksChanged() void {}
 
+fn stubCloseup(request: App.Closeup) anyerror!void {
+    return sheet_under_test.closeup(request);
+}
+
 fn alwaysCurrent() bool {
     return true;
 }
@@ -1054,7 +1058,7 @@ fn contactSheet(c: Ctx) !void {
         }
     }.f };
     sheet_under_test = &sheet;
-    app.hooks = .{ .edited = stubEdited, .screenshot = stubScreenshot, .sheet = stubSheet, .selected = stubSelected, .picks_changed = stubPicksChanged };
+    app.hooks = .{ .edited = stubEdited, .screenshot = stubScreenshot, .sheet = stubSheet, .selected = stubSelected, .picks_changed = stubPicksChanged, .closeup = stubCloseup };
 
     const Answer = struct { text: []const u8, jpeg: []const u8 };
     const ask = struct {
@@ -1140,6 +1144,57 @@ fn contactSheet(c: Ctx) !void {
     const dims = try sheetSize(c, folder, r.jpeg);
     try expect(dims[0] == portrait.width and dims[1] == portrait.height, "portrait sheet {any}, not {d}x{d}", .{ dims, portrait.width, portrait.height });
 
+    // Sharpness is the same number whatever the size of the sheet.
+    const sharpOf = struct {
+        fn f(text: []const u8, name: []const u8) []const u8 {
+            const line = text[std.mem.indexOf(u8, text, name).?..];
+            const at = std.mem.indexOf(u8, line, "sharp ").? + 6;
+            return line[at..][0 .. std.mem.indexOfAny(u8, line[at..], " \n") orelse 0];
+        }
+    }.f;
+    r = try ask(c, &app, "contact_sheet", "{\"count\":5}");
+    const among_five = try c.arena.dupe(u8, sharpOf(r.text, "p3.jpg"));
+    r = try ask(c, &app, "contact_sheet", "{\"photos\":[4]}");
+    try expect(std.mem.eql(u8, among_five, sharpOf(r.text, "p3.jpg")), "sharp {s} among five, {s} alone", .{ among_five, sharpOf(r.text, "p3.jpg") });
+
+    // A closer look: the photo's own pixels there, before and after, a mask's edge. Nothing changes.
+    try app.open(3);
+    const before = (try (try app.session(3)).recipe(a));
+    const full = try core.decode.info(a, try std.fmt.allocPrintSentinel(a, "{s}/p3.jpg", .{folder}, 0));
+    r = try ask(c, &app, "get_view", "{\"zoom\":{\"at\":[0.5,0.4],\"size\":0.1}}");
+    var dims2 = try sheetSize(c, folder, r.jpeg);
+    const want: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(@max(full.width, full.height))) * 0.1));
+    try expect(dims2[0] == want and dims2[1] == want and std.mem.indexOf(u8, r.text, "In detail") != null, "zoom {any}, want {d}: {s}", .{ dims2, want, r.text });
+    try app.edit("{\"edits\":{\"exposure\":1.5}}", 0);
+    r = try ask(c, &app, "get_view", "{\"compare\":true}");
+    dims2 = try sheetSize(c, folder, r.jpeg);
+    const left = try pictureLevel(c, folder, r.jpeg, dims2[0] / 4, dims2[1] / 2);
+    const right = try pictureLevel(c, folder, r.jpeg, dims2[0] * 3 / 4, dims2[1] / 2);
+    try expect(dims2[0] > dims2[1] and right > left + 20 and std.mem.indexOf(u8, r.text, "On the left") != null, "compare {any}: left {d}, right {d}", .{ dims2, left, right });
+    r = try ask(c, &app, "get_view", "{\"compare\":true,\"zoom\":{\"at\":[0.5,0.5],\"size\":0.15}}");
+    try expect(r.jpeg.len > 1000, "both at once: {s}", .{r.text});
+    try expect(eqlRecipes(a, (try (try app.session(3)).recipe(a)), .{ .edits = .{ .exposure = 1.5 }, .updatedBy = .user, .updatedAt = before.updatedAt }), "looking changed the recipe", .{});
+
+    // One mask changes; the others and what isn't named stay. By position or name; a typo or
+    // a subject's outline is refused.
+    try app.edit("{\"masks\":[{\"name\":\"Sky\",\"shape\":\"linear\",\"edits\":{\"exposure\":-1,\"tint\":3}},{\"name\":\"Face\",\"shape\":\"radial\",\"feather\":70,\"edits\":{\"exposure\":0.5}},{\"name\":\"Her\",\"shape\":\"subject\",\"file\":\"abc.png\",\"edits\":{\"tint\":1}}]}", 0);
+    r = try ask(c, &app, "edit_mask", "{\"mask\":\"sky\",\"edits\":{\"exposure\":-0.5}}");
+    var masks = (try app.recipe(a)).masks;
+    try expect(masks[0].edits.exposure == -0.5 and masks[0].edits.tint == 3 and masks[1].feather == 70 and std.mem.eql(u8, masks[2].file, "abc.png"), "changed too much: {s}", .{r.text});
+    r = try ask(c, &app, "edit_mask", "{\"mask\":1,\"feather\":40,\"show\":true}");
+    masks = (try app.recipe(a)).masks;
+    try expect(masks[1].feather == 40 and masks[1].edits.exposure == 0.5 and shot_mask == 1, "by position", .{});
+    r = try ask(c, &app, "edit_mask", "{\"mask\":2,\"file\":\"other.png\"}");
+    try expect(std.mem.eql(u8, (try app.recipe(a)).masks[2].file, "abc.png"), "the outline changed: {s}", .{r.text});
+    r = try ask(c, &app, "edit_mask", "{\"mask\":0,\"feathers\":40}");
+    try expect(std.mem.indexOf(u8, r.text, "doesn't know") != null or std.mem.indexOf(u8, r.text, "UnknownField") != null, "a typo: {s}", .{r.text});
+    r = try ask(c, &app, "edit_mask", "{\"mask\":9,\"feather\":40}");
+    try expect(std.mem.indexOf(u8, r.text, "no mask at that position") != null, "no such mask: {s}", .{r.text});
+    r = try ask(c, &app, "edit_mask", "{\"mask\":\"Face\",\"remove\":true}");
+    masks = (try app.recipe(a)).masks;
+    try expect(masks.len == 2 and std.mem.eql(u8, masks[1].name, "Her"), "removing", .{});
+    try expect(try app.undo() and (try app.recipe(a)).masks.len == 3, "one undo step", .{});
+
     // The user's selection still works too; and the numbers open a photo.
     picked_photos = &.{};
     r = try ask(c, &app, "contact_sheet", "{\"photos\":\"selected\"}");
@@ -1149,6 +1204,26 @@ fn contactSheet(c: Ctx) !void {
     try expect(std.mem.indexOf(u8, r.text, "\n4  p3.jpg") != null and r.jpeg.len > 1000, "the selection: {s}", .{r.text});
     picked_photos = &.{};
     app.flush();
+}
+
+fn pictureLevel(c: Ctx, dir: []const u8, jpeg: []const u8, x: u32, y: u32) !u8 {
+    const path = try std.fmt.allocPrintSentinel(c.arena, "{s}/.sheet.jpeg", .{dir}, 0);
+    try std.Io.Dir.cwd().writeFile(c.io, .{ .sub_path = path, .data = jpeg });
+    defer std.Io.Dir.cwd().deleteFile(c.io, path) catch {};
+    var lin = try core.decode.linear(gpa, path, 0);
+    defer lin.deinit(gpa);
+    const v: f16 = @bitCast(lin.rgb[(@as(usize, y) * lin.width + x) * 3 + 1]);
+    return @intFromFloat(@round(encode(@floatCast(v)) * 255));
+}
+
+fn eqlRecipes(a: std.mem.Allocator, x: Recipe, y: Recipe) bool {
+    var p = x;
+    var q = y;
+    p.updatedAt = "";
+    q.updatedAt = "";
+    const left = p.writeAlloc(a) catch return false;
+    const right = q.writeAlloc(a) catch return false;
+    return std.mem.eql(u8, left, right);
 }
 
 fn sheetSize(c: Ctx, dir: []const u8, jpeg: []const u8) ![2]u32 {

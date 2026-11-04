@@ -2,6 +2,7 @@
 //! edits and marked with its position in the folder, the same number get_view shows. A picture of
 //! about 1568 px on its long edge, the most Claude sees without it being shrunk first. Photos decode
 //! on workers; once all have, the cells take the shape most of them are and they draw on the main loop.
+//! Closeups come through here too: one photo at full size, for Claude to judge what a small picture hides.
 const std = @import("std");
 const Io = std.Io;
 const core = @import("photo-core");
@@ -26,6 +27,10 @@ const max_decode_edge = 2048;
 // Sharpness means little measured on anything smaller.
 const min_decode_edge = 1024;
 const sharpness_tiles = 8;
+// Always measured at this size: on more pixels the same photo scores differently.
+const sharpness_edge = 1024;
+const closeup_edge = 1200;
+const compare_edge = 782;
 const digit_scale = 3;
 const digit_pad = 4;
 
@@ -186,7 +191,15 @@ const Cell = struct {
             log.warn("{s}: {t}", .{ c.rel, err });
             break :blk null;
         };
-        if (c.linear) |l| c.sharp = sharpness(l.rgb, l.width, l.height);
+        if (c.linear) |l| {
+            if (c.edge == sharpness_edge) {
+                c.sharp = sharpness(l.rgb, l.width, l.height);
+            } else if (core.decode.linear(gpa, c.path, sharpness_edge)) |measured| {
+                var m = measured;
+                defer m.deinit(gpa);
+                c.sharp = sharpness(m.rgb, m.width, m.height);
+            } else |_| {}
+        }
         c.info = core.decode.info(c.info_arena.allocator(), c.path) catch .{};
     }
 
@@ -344,7 +357,148 @@ fn compose(s: *Sheet, job: *Job) !struct { text: []u8, base64: []const u8 } {
     return .{ .text = try w.toOwnedSlice(), .base64 = base64 };
 }
 
+// ---- A closer look ----
+
+pub const Window = struct { width: u32, height: u32, view: [4]f32, percent: u32 };
+
+/// The part of a photo `size` big to show, on at most `most` pixels, never bigger than its own pixels.
+/// Moved back onto the photo if it would run off it. `at` null: all of it.
+pub fn windowFor(size: [2]u32, at: ?[2]f32, share: f32, most: u32) Window {
+    const w: f64 = @floatFromInt(size[0]);
+    const h: f64 = @floatFromInt(size[1]);
+    const long = @max(w, h);
+    const side = std.math.clamp(@as(f64, share), 0.01, 1) * long;
+    const across = if (at != null) @min(side, w) else w;
+    const down = if (at != null) @min(side, h) else h;
+    const scale = @min(1, @as(f64, @floatFromInt(most)) / @max(across, down));
+    const point = at orelse [2]f32{ 0.5, 0.5 };
+    const x = std.math.clamp(@as(f64, point[0]) * w - across / 2, 0, w - across);
+    const y = std.math.clamp(@as(f64, point[1]) * h - down / 2, 0, h - down);
+    return .{
+        .width = @intFromFloat(@max(1, @round(across * scale))),
+        .height = @intFromFloat(@max(1, @round(down * scale))),
+        .view = .{ @floatCast(x / w), @floatCast(y / h), @floatCast(across / w), @floatCast(down / h) },
+        .percent = @intFromFloat(@round(scale * 100)),
+    };
+}
+
+const Closeup = struct {
+    task: Pool.Task = .{ .run = runCloseup, .done = doneCloseup },
+    sheet: *Sheet,
+    request: App.Closeup,
+    path: [:0]u8,
+    recipe_json: []u8,
+    linear: ?core.decode.Linear = null,
+};
+
+/// Answers with the photo in detail, or before and after, under `request.text`.
+pub fn closeup(s: *Sheet, request: App.Closeup) !void {
+    const f = &(s.app.folder orelse return error.NoFolder);
+    const session = try s.app.session(request.index);
+    const c = try s.gpa.create(Closeup);
+    errdefer s.gpa.destroy(c);
+    const path = try std.fmt.allocPrintSentinel(s.gpa, "{s}/{s}", .{ f.path, f.photos[request.index].rel }, 0);
+    errdefer s.gpa.free(path);
+    c.* = .{ .sheet = s, .request = request, .path = path, .recipe_json = try s.gpa.dupe(u8, session.json) };
+    s.pool.submit(&c.task, .urgent);
+}
+
+fn runCloseup(task: *Pool.Task) void {
+    const c: *Closeup = @fieldParentPtr("task", task);
+    // In detail, the photo's own pixels; side by side, a preview's are plenty.
+    c.linear = core.decode.linear(c.sheet.gpa, c.path, if (c.request.at != null) 0 else max_decode_edge) catch |err| blk: {
+        log.warn("{s}: {t}", .{ c.path, err });
+        break :blk null;
+    };
+}
+
+fn doneCloseup(task: *Pool.Task) void {
+    const c: *Closeup = @fieldParentPtr("task", task);
+    const s = c.sheet;
+    defer {
+        if (c.linear) |*l| l.deinit(s.gpa);
+        s.gpa.free(c.path);
+        s.gpa.free(c.recipe_json);
+        s.gpa.destroy(c);
+        _ = malloc_trim(0);
+    }
+    var arena: std.heap.ArenaAllocator = .init(s.gpa);
+    defer arena.deinit();
+    const base64 = s.composeCloseup(arena.allocator(), c) catch |err| blk: {
+        log.warn("closeup: {t}", .{err});
+        break :blk "";
+    };
+    tools.finishScreenshot(s.app, .{ .call = c.request.call, .text = c.request.text }, base64, "");
+}
+
+extern fn malloc_trim(pad: usize) c_int;
+
+fn composeCloseup(s: *Sheet, a: std.mem.Allocator, c: *const Closeup) ![]const u8 {
+    const l = &(c.linear orelse return error.NoPhoto);
+    const p = try s.ready();
+    // A full-size photo's render targets are big: not kept for the next time.
+    defer if (c.request.at != null) p.release();
+    try p.setSource(@intCast(l.width), @intCast(l.height), l.rgb.ptr);
+    const r = try Recipe.parse(a, c.recipe_json);
+    const size = p.outputSize(r, false);
+    const compare = c.request.compare;
+    const window = windowFor(.{ @intCast(size[0]), @intCast(size[1]) }, c.request.at, c.request.size, if (compare) compare_edge else closeup_edge);
+    const panels: u32 = if (compare) 2 else 1;
+    const width = panels * window.width + (panels - 1) * gap;
+    const rgb = try a.alloc(u8, @as(usize, width) * window.height * 3);
+    @memset(rgb, background);
+    if (compare) {
+        const original: Recipe = .{ .crop = r.crop };
+        s.looks.prepare(p, original);
+        try drawPanel(s, p, original, window, null, rgb, width, 0);
+    }
+    s.looks.prepare(p, r);
+    try drawPanel(s, p, r, window, c.request.show_mask, rgb, width, (panels - 1) * (window.width + gap));
+    const jpeg = try core.encode.jpegBytes(rgb, width, window.height, 88);
+    defer core.vips.freeMemory(jpeg);
+    const base64 = try a.alloc(u8, std.base64.standard.Encoder.calcSize(jpeg.len));
+    _ = std.base64.standard.Encoder.encode(base64, jpeg);
+    return base64;
+}
+
+fn drawPanel(s: *Sheet, p: *Pipeline, r: Recipe, window: Window, show_mask: ?usize, rgb: []u8, width: u32, left: u32) !void {
+    var t = try Pipeline.target(@intCast(window.width), @intCast(window.height), gl.RGBA8, gl.UNSIGNED_BYTE);
+    defer t.free();
+    p.render(r, .{ .fbo = t.fbo, .width = @intCast(window.width), .height = @intCast(window.height), .dither = 1.0 / 255.0, .view = window.view, .show_mask = show_mask });
+    gl.glBindFramebuffer(gl.FRAMEBUFFER, t.fbo);
+    const px = try s.gpa.alloc(u8, @as(usize, window.width) * window.height * 4);
+    defer s.gpa.free(px);
+    gl.glReadPixels(0, 0, @intCast(window.width), @intCast(window.height), gl.RGBA, gl.UNSIGNED_BYTE, px.ptr);
+    for (0..window.height) |y| for (0..window.width) |x| {
+        rgb[(y * width + left + x) * 3 ..][0..3].* = px[(y * window.width + x) * 4 ..][0..3].*;
+    };
+}
+
 const testing = std.testing;
+
+test "a closer look shows that part at 100%, stays on the photo, and shrinks only what doesn't fit" {
+    const photo = [2]u32{ 3888, 5184 };
+    // A face: a tenth of the long edge, its own pixels.
+    const face = windowFor(photo, .{ 0.5, 0.4 }, 0.1, closeup_edge);
+    try testing.expectEqual(518, face.width);
+    try testing.expectEqual(518, face.height);
+    try testing.expectEqual(100, face.percent);
+    try testing.expectApproxEqAbs(@as(f32, 0.5 - 518.4 / 3888.0 / 2.0), face.view[0], 0.001);
+    // Half the photo doesn't fit in 1200 pixels: it's smaller, not cut off.
+    const half = windowFor(photo, .{ 0.5, 0.5 }, 0.5, closeup_edge);
+    try testing.expectEqual(1200, half.height);
+    try testing.expect(half.percent < 50);
+    // In a corner, the window moves back onto the photo.
+    const corner = windowFor(photo, .{ 0.99, 0.01 }, 0.2, closeup_edge);
+    try testing.expectEqual(0, corner.view[1]);
+    try testing.expect(corner.view[0] + corner.view[2] <= 1.0001);
+    // Too big a window is all the photo, in its shape.
+    const all = windowFor(photo, .{ 0.5, 0.5 }, 1, closeup_edge);
+    try testing.expectApproxEqAbs(@as(f32, 1), all.view[2], 0.001);
+    try testing.expectEqual(900, all.width);
+    // No place given: all of it, whatever the share.
+    try testing.expectEqual(1200, windowFor(photo, null, 0.1, closeup_edge).height);
+}
 
 test "a sheet fits on 1568 pixels, with the biggest cells that fit" {
     for (1..max_photos + 1) |n| for ([_]Shape{ .landscape, .portrait, .square }) |shape| {

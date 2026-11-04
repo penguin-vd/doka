@@ -172,7 +172,7 @@ pub fn apply(arena: std.mem.Allocator, base: Recipe, patch: std.json.Value) !Rec
     return r;
 }
 
-fn mergeInto(arena: std.mem.Allocator, target: *std.json.Value, patch: std.json.Value) !void {
+pub fn mergeInto(arena: std.mem.Allocator, target: *std.json.Value, patch: std.json.Value) !void {
     if (patch != .object or target.* != .object) {
         target.* = patch;
         return;

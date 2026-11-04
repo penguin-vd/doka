@@ -69,6 +69,21 @@ pub const Hooks = struct {
     // The photos Ctrl-clicked in the sidebar.
     selected: ?*const fn (a: std.mem.Allocator) anyerror![]const u32 = null,
     picks_changed: ?*const fn () void = null,
+    // A look at the open photo in detail, or before and after, answers the call.
+    closeup: ?*const fn (request: Closeup) anyerror!void = null,
+};
+
+pub const Closeup = struct {
+    call: *Mcp.Call,
+    // Goes under the picture; the closeup frees it.
+    text: []u8,
+    index: usize,
+    // Where to look, 0..1 of the photo as its crop shows it, and how much: a share of its long edge.
+    at: ?[2]f32 = null,
+    size: f32 = 0.2,
+    // The original beside the edit.
+    compare: bool = false,
+    show_mask: ?usize = null,
 };
 
 pub const Shot = struct {

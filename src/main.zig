@@ -949,6 +949,10 @@ fn hookBake(a: std.mem.Allocator, title: []const u8, size: u32) ![]const u8 {
     return @import("app/cube.zig").write(a, title, size, lattice);
 }
 
+fn hookCloseup(request: App.Closeup) anyerror!void {
+    return sheet.closeup(request);
+}
+
 fn hookSheet(call: *Mcp.Call, indices: []const u32, lead: []const u8) anyerror!void {
     return sheet.start(call, indices, lead);
 }
@@ -1246,6 +1250,7 @@ pub fn main(init: std.process.Init) !u8 {
         .compile_shader = hookCompile,
         .bake = hookBake,
         .sheet = hookSheet,
+        .closeup = hookCloseup,
         .selected = hookSelected,
         .picks_changed = hookPicksChanged,
     };

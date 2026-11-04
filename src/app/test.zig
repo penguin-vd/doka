@@ -103,7 +103,7 @@ test "Claude's tool list is valid JSON, one entry per tool with a schema" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const list = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), tools.definitions, .{});
-    const want = [_][]const u8{ "get_view", "set_edits", "mask_subject", "open_photo", "list_photos", "contact_sheet", "pick_photos", "undo", "export", "list_looks", "list_shaders", "get_shader", "save_shader", "delete_shader", "bake_look" };
+    const want = [_][]const u8{ "get_view", "set_edits", "edit_mask", "mask_subject", "open_photo", "list_photos", "contact_sheet", "pick_photos", "undo", "export", "list_looks", "list_shaders", "get_shader", "save_shader", "delete_shader", "bake_look" };
     try testing.expectEqual(want.len, list.array.items.len);
     for (list.array.items, want) |t, name| {
         try testing.expectEqualStrings(name, t.object.get("name").?.string);
