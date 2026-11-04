@@ -6,6 +6,9 @@ uniform float u_tint;
 uniform float u_contrast;
 uniform float u_highlights;
 uniform float u_shadows;
+uniform float u_whites;
+uniform float u_blacks;
+uniform float u_vibrance;
 uniform float u_saturation;
 uniform vec3 u_bands[6];     // hue, saturation, lightness per colour band, -1..1
 
@@ -48,6 +51,19 @@ vec3 rollOff(vec3 c, float top) {
   return mix(c, knee + (1.0 - knee) * g, step(knee, c));
 }
 
+// Whites and blacks move the two ends of the tones and leave the middle: they read and move
+// display-encoded brightness, so a share of the range looks the same at both ends. Pure black has no
+// colour to scale up, so a lift there is neutral and fades to scaling as colour appears.
+vec3 toneEnds(vec3 c) {
+  if (u_whites == 0.0 && u_blacks == 0.0) return c;
+  float l = max(luma(c), 0.0);
+  float v = srgbEncode(vec3(l)).r;
+  float to = v + 0.2 * u_whites * smoothstep(0.5, 1.0, v) + 0.12 * u_blacks * (1.0 - smoothstep(0.0, 0.4, v));
+  float lt = srgbDecode(vec3(to)).r;
+  if (lt <= l) return scaleLuma(c, l, lt);
+  return c + (lt - l) * mix(vec3(1.0), c / max(l, 1e-6), smoothstep(0.0, 0.05, l));
+}
+
 float cbrt(float x) { return sign(x) * pow(abs(x), 1.0 / 3.0); }
 
 vec3 toOklab(vec3 c) {
@@ -74,7 +90,9 @@ vec3 fromOklab(vec3 lab) {
 const float BAND_HUE[6] = float[6](25.0, 60.0, 100.0, 145.0, 250.0, 315.0);
 const float BAND_WIDTH[6] = float[6](26.0, 22.0, 26.0, 38.0, 45.0, 35.0);
 
-// Saturation and the per-colour mixer in OKLCH, so a hue shift keeps its brightness.
+const float VIBRANCE_SKIN_HUE = 55.0;
+
+// Saturation, vibrance and the per-colour mixer in OKLCH, so a hue shift keeps its brightness.
 vec3 colour(vec3 c) {
   vec3 lab = toOklab(c);
   float chroma = length(lab.yz);
@@ -89,8 +107,11 @@ vec3 colour(vec3 c) {
   }
   // Greys have no colour to belong to a band: they stay put.
   float colourful = smoothstep(0.0, 0.06, chroma);
+  // Vibrance leaves what's already vivid, and goes easy on skin tones.
+  float skin = mod(hue - VIBRANCE_SKIN_HUE + 540.0, 360.0) - 180.0;
+  float vibrance = 1.0 + u_vibrance * (1.0 - smoothstep(0.0, 0.2, chroma)) * (1.0 - 0.6 * exp(-0.5 * skin * skin / 625.0));
   hue += 30.0 * shift * colourful;
-  chroma *= max(0.0, 1.0 + sat) * max(0.0, 1.0 + u_saturation);
+  chroma *= max(0.0, 1.0 + sat) * max(0.0, vibrance) * max(0.0, 1.0 + u_saturation);
   lab.x *= 1.0 + 0.3 * lit * colourful;
   lab.yz = chroma * vec2(cos(radians(hue)), sin(radians(hue)));
   return fromOklab(lab);
@@ -99,6 +120,6 @@ vec3 colour(vec3 c) {
 vec3 adjust(vec3 linear) {
   vec3 c = light(linear);
   vec3 white = light(vec3(1.0));
-  c = rollOff(c, max(white.r, max(white.g, white.b)));
+  c = toneEnds(rollOff(c, max(white.r, max(white.g, white.b))));
   return clamp(colour(c), 0.0, 1.0);
 }

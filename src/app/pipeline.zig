@@ -3,7 +3,7 @@
 //!
 //!   photo (linear, half float)
 //!   → detail      noise reduction, sharpening        (only when set)
-//!   → develop     the Adjust sliders, colour mixer, the look's LUT
+//!   → develop     the Adjust sliders, colour mixer, tone curve, the look's LUT
 //!   → masks       each mask's own sliders and mixer, where it selects
 //!   → shaders     each enabled shader, in order
 //!   → halation    bright parts, blurred              (only when set)
@@ -87,6 +87,7 @@ pub const Output = struct {
 
 gpa: std.mem.Allocator,
 es: bool,
+curve: c_uint = 0,
 detail: c_uint = 0,
 develop: c_uint = 0,
 mask: c_uint = 0,
@@ -186,6 +187,9 @@ fn linearClamped(kind: c_uint) void {
 /// With a GL context current; `es` when it's OpenGL ES (GTK picks).
 pub fn init(gpa: std.mem.Allocator, es: bool) !Pipeline {
     var p: Pipeline = .{ .gpa = gpa, .es = es };
+    gl.glGenTextures(1, &p.curve);
+    gl.glBindTexture(gl.TEXTURE_2D, p.curve);
+    linearClamped(gl.TEXTURE_2D);
     p.detail = try program(es, &.{@embedFile("glsl/detail.glsl")});
     p.develop = try program(es, &.{ adjust_source, @embedFile("glsl/develop.glsl") });
     p.mask = try program(es, &.{ adjust_source, @embedFile("glsl/mask.glsl") });
@@ -380,6 +384,9 @@ fn setAdjustValues(prog: c_uint, e: Recipe.Edits, colour: Recipe.Colour) void {
     gl.glUniform1f(at(prog, "u_contrast"), e.contrast / 100);
     gl.glUniform1f(at(prog, "u_highlights"), e.highlights / 100);
     gl.glUniform1f(at(prog, "u_shadows"), e.shadows / 100);
+    gl.glUniform1f(at(prog, "u_whites"), e.whites / 100);
+    gl.glUniform1f(at(prog, "u_blacks"), e.blacks / 100);
+    gl.glUniform1f(at(prog, "u_vibrance"), e.vibrance / 100);
     gl.glUniform1f(at(prog, "u_saturation"), e.saturation / 100);
     var bands: [band_count * 3]f32 = undefined;
     inline for (.{ "reds", "oranges", "yellows", "greens", "blues", "purples" }, 0..) |name, i| {
@@ -466,6 +473,16 @@ fn setDevelopValues(p: *Pipeline, r: Recipe) void {
     gl.glBindTexture(gl.TEXTURE_3D, p.lut);
     gl.glUniform1i(at(d, "u_lut"), 7);
     setAdjustValues(d, r.edits, r.colour);
+    gl.glActiveTexture(gl.TEXTURE0 + 6);
+    gl.glBindTexture(gl.TEXTURE_2D, p.curve);
+    gl.glUniform1i(at(d, "u_curve"), 6);
+    gl.glUniform1i(at(d, "u_curve_on"), @intFromBool(r.curve.len > 0));
+    if (r.curve.len > 0) {
+        var table: [Recipe.curve_samples]f32 = undefined;
+        Recipe.curveTable(r.curve, &table);
+        gl.glPixelStorei(gl.UNPACK_ALIGNMENT, 4);
+        gl.glTexImage2D(gl.TEXTURE_2D, 0, gl.R16F, table.len, 1, 0, gl.RED, gl.FLOAT, &table);
+    }
     const has_look = !std.mem.eql(u8, r.look.name, Recipe.no_look) and r.look.strength > 0 and p.lut_size > 2;
     gl.glUniform1f(at(d, "u_lut_size"), @floatFromInt(p.lut_size));
     gl.glUniform3f(at(d, "u_lut_min"), p.lut_min[0], p.lut_min[1], p.lut_min[2]);

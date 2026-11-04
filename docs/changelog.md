@@ -89,6 +89,12 @@ Changed for what someone would notice, a line under Decided for a choice whose r
   while clicking a subject moves the photo; the red shows while dragging Feather or a tone limit; the
   limits fold away so the Light sliders stay near the top; a mask's eye no longer rebuilds the list;
   grabbing takes the nearest handle; new masks don't repeat a name; a failed subject click says so.
+- Whites, Blacks and Vibrance join the sliders, on the whole photo and on masks; Vibrance goes easy on
+  what's vivid and on skin.
+- A tone curve in Adjust for the whole photo: click to add a point, drag it, double-click to take it
+  away. Its own Reset, or a double-click on its name, makes it straight again; so does Reset sliders.
+  It goes into exports and baked looks.
+- Claude's set_edits takes `whites`, `blacks`, `vibrance` and `curve`.
 
 ### Decided
 
@@ -157,3 +163,7 @@ Changed for what someone would notice, a line under Decided for a choice whose r
 - GTK 4 instead of WebKit: WebKit stays near 60 frames per second on this NVIDIA driver. GTK over Raylib or
   SDL: an editor is mostly lists, sliders, dialogs and text, and it draws nothing when idle.
 - The shaders stayed as they were; the version line follows what GTK offers (OpenGL ES here, desktop on a Mac).
+- Whites and blacks come after the highlight roll-off: before it, the shoulder would take back what
+  Whites adds, and white could never clip on purpose.
+- The curve works per channel on display values, before the look, as a classic curve does: its
+  contrast also adds some saturation, and masks don't have one.

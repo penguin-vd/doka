@@ -22,6 +22,7 @@ pub const RGBA16F = 0x881A;
 pub const RGBA8 = 0x8058;
 pub const RGB8 = 0x8051;
 pub const R8 = 0x8229;
+pub const R16F = 0x822D;
 pub const RED = 0x1903;
 pub const HALF_FLOAT = 0x140B;
 pub const UNSIGNED_BYTE = 0x1401;

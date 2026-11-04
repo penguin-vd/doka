@@ -11,6 +11,7 @@ const cropping = @import("crop.zig");
 const App = @import("app.zig");
 const Canvas = @import("canvas.zig");
 const MasksPanel = @import("masks_panel.zig");
+const CurvePanel = @import("curve_panel.zig");
 const Slider = @import("slider.zig");
 const Library = @import("library.zig");
 const Looks = @import("looks.zig");
@@ -142,6 +143,11 @@ const tests = .{
     .{ "highlights -100 darkens white, shadows +100 lifts black", highlightsShadows },
     .{ "saturation -100 is grey", saturation },
     .{ "temperature warms: more red, less blue", temperature },
+    .{ "whites move the bright end, blacks the dark end, and neither moves the middle", whitesBlacks },
+    .{ "blacks lift pure black evenly, with no jump and no colour cast", blacksLift },
+    .{ "vibrance lifts dull colours more than vivid ones, and skin less than other colours", vibrance },
+    .{ "the tone curve shapes the tones, and goes into a baked look", toneCurve },
+    .{ "an exported photo with a curve and the new sliders matches the preview", curveExport },
     .{ "rotate 90 turns clockwise", rotate },
     .{ "flip mirrors left to right", flip },
     .{ "crop keeps the rectangle asked for", cropRect },
@@ -173,6 +179,7 @@ const tests = .{
     .{ "a shader that doesn't compile is tried once and says why, until it's fixed", brokenShader },
     .{ "the keys and a limit's drag do what they say on the layers", maskKeys },
     .{ "a press on the photo takes hold of the right thing, with the pointer to match", canvasPresses },
+    .{ "the curve panel adds, moves and takes away points, and leaves a straight curve out of the recipe", curvePanel },
     .{ "an export through the pipeline keeps camera, lens, date and exposure, and the original is untouched", exportKeepsMetadata },
 };
 
@@ -216,6 +223,72 @@ fn saturation(c: Ctx) !void {
 fn temperature(c: Ctx) !void {
     const r = try c.run(1, 1, try grey(c.arena, &.{0.2}), "{\"edits\":{\"temperature\":50}}", null);
     try expect(r.px[0] > r.px[1] and r.px[1] > r.px[2], "got {any}", .{r.px[0..3]});
+}
+
+fn whitesBlacks(c: Ctx) !void {
+    const tones = [_]f32{ 0.003, 0.18, 0.8, 1 };
+    const base = try c.run(4, 1, try grey(c.arena, &tones), "{}", null);
+    const dark = try c.run(4, 1, try grey(c.arena, &tones), "{\"edits\":{\"whites\":-100,\"blacks\":-100}}", null);
+    const bright = try c.run(4, 1, try grey(c.arena, &tones), "{\"edits\":{\"whites\":100,\"blacks\":100}}", null);
+    try expect(dark.px[12] < 225 and dark.px[8] < base.px[8] and bright.px[8] > base.px[8], "whites: white {d}, light {d} / {d} / {d}", .{ dark.px[12], dark.px[8], base.px[8], bright.px[8] });
+    try expect(dark.px[0] == 0 and bright.px[0] > base.px[0] + 20, "blacks: {d} / {d} / {d}", .{ dark.px[0], base.px[0], bright.px[0] });
+    const middle = [3]u8{ dark.px[4], base.px[4], bright.px[4] };
+    try expect(@abs(@as(i32, middle[0]) - middle[1]) <= 1 and @abs(@as(i32, middle[2]) - middle[1]) <= 1, "the middle moved: {any}", .{middle});
+}
+
+fn blacksLift(c: Ctx) !void {
+    const r = try c.run(3, 1, &.{ 0, 0, 0, 0.0005, 0.0005, 0.0005, 0.002, 0.0005, 0.0005 }, "{\"edits\":{\"blacks\":100}}", null);
+    const black = r.px[0..3];
+    try expect(black[0] > 20 and black[0] == black[1] and black[1] == black[2], "black {any}", .{black});
+    try expect(@abs(@as(i32, r.px[4]) - black[0]) <= 3, "a jump next to black: {d} and {d}", .{ black[0], r.px[4] });
+    const reddish = r.px[8..11];
+    try expect(channelSpread(reddish) < 20, "a dark colour blown up: {any}", .{reddish});
+}
+
+fn channelSpread(px: []const u8) i32 {
+    return @as(i32, @max(px[0], px[1], px[2])) - @min(px[0], px[1], px[2]);
+}
+
+fn vibrance(c: Ctx) !void {
+    // A dull blue, a vivid blue, and a skin tone as dull as the dull blue.
+    const pixels = [_]f32{ 0.20, 0.22, 0.28, 0.02, 0.05, 0.9, 0.28, 0.22, 0.20 };
+    const base = try c.run(3, 1, &pixels, "{}", null);
+    const more = try c.run(3, 1, &pixels, "{\"edits\":{\"vibrance\":100}}", null);
+    const less = try c.run(3, 1, &pixels, "{\"edits\":{\"vibrance\":-100}}", null);
+    const dull = channelSpread(more.px[0..3]) - channelSpread(base.px[0..3]);
+    const vivid = channelSpread(more.px[4..7]) - channelSpread(base.px[4..7]);
+    const skin = channelSpread(more.px[8..11]) - channelSpread(base.px[8..11]);
+    try expect(dull > 8 and dull > 2 * vivid, "dull +{d}, vivid +{d}", .{ dull, vivid });
+    try expect(skin > 0 and skin * 3 < dull * 2, "skin +{d}, dull +{d}", .{ skin, dull });
+    try expect(channelSpread(less.px[0..3]) < channelSpread(base.px[0..3]), "-100 didn't mute", .{});
+    const g = try c.run(1, 1, try grey(c.arena, &.{0.2}), "{\"edits\":{\"vibrance\":100}}", null);
+    try expect(channelSpread(g.px[0..3]) <= 1, "grey took on colour: {any}", .{g.px[0..3]});
+}
+
+fn toneCurve(c: Ctx) !void {
+    const tones = [_]f32{ decode(0.25), decode(0.5), decode(0.75) };
+    const r = try c.run(3, 1, try grey(c.arena, &tones), "{\"curve\":[[0,0],[0.25,0.1],[0.75,0.9],[1,1]]}", null);
+    const want = [3]i32{ 26, 128, 230 };
+    for (want, 0..) |w, i| try expect(@abs(@as(i32, r.px[i * 4]) - w) <= 5, "tone {d}: {d}, want {d}", .{ i, r.px[i * 4], w });
+    // Black and white ends can move: a faded black.
+    const faded = try c.run(1, 1, try grey(c.arena, &.{0}), "{\"curve\":[[0,0.2],[1,1]]}", null);
+    try expect(@abs(@as(i32, faded.px[0]) - 51) <= 2, "faded black {d}", .{faded.px[0]});
+    // Before the look, and in a baked one.
+    const lattice = try c.p.bakeLattice(gpa, c.recipe("{\"curve\":[[0,0.2],[1,1]]}"), 9);
+    defer gpa.free(lattice);
+    try expect(@abs(lattice[0] - 0.2) < 0.02, "baked black {d}", .{lattice[0]});
+}
+
+fn curveExport(c: Ctx) !void {
+    const json = "{\"curve\":[[0.25,0.2],[0.75,0.8]],\"edits\":{\"whites\":30,\"blacks\":-20,\"vibrance\":20},\"detail\":{\"sharpen\":20}}";
+    const preview = try c.run(256, 1, try ramp(c.arena), json, null);
+    const px = try Exporter.renderPixels(c.p, gpa, c.recipe(json), 8, false);
+    defer gpa.free(px.data);
+    var worst: i32 = 0;
+    for (0..256) |i| for (0..3) |k| {
+        worst = @max(worst, @as(i32, @intCast(@abs(@as(i32, px.data[i * 3 + k]) - preview.px[i * 4 + k]))));
+    };
+    try expect(worst <= 1, "off by {d} levels", .{worst});
 }
 
 fn rotate(c: Ctx) !void {
@@ -932,6 +1005,93 @@ fn onTestCrop(rect: cropping.Rect, _: u64) void {
 fn pointerIs(canvas: *const Canvas, name: ?[]const u8) bool {
     const now = canvas.cursor_name orelse return name == null;
     return name != null and std.mem.eql(u8, std.mem.span(now), name.?);
+}
+
+fn tempPhoto(c: Ctx, app: *App, tag: []const u8) !?[:0]const u8 {
+    const photo = std.Io.Dir.cwd().readFileAlloc(c.io, "testdata/photos/P8120024.JPG", gpa, .limited(64 << 20)) catch return null;
+    defer gpa.free(photo);
+    const folder = try std.fmt.allocPrintSentinel(c.arena, "/tmp/doka-probe-{s}-{d}", .{ tag, std.c.getpid() }, 0);
+    try std.Io.Dir.cwd().createDirPath(c.io, folder);
+    try std.Io.Dir.cwd().writeFile(c.io, .{ .sub_path = try std.fmt.allocPrint(c.arena, "{s}/a.jpg", .{folder}), .data = photo });
+    try app.openFolder(folder);
+    return folder;
+}
+
+fn curvePanel(c: Ctx) !void {
+    var app: App = .{ .gpa = gpa, .io = c.io };
+    defer app.closeFolder();
+    const folder = try tempPhoto(c, &app, "curve") orelse return;
+    defer std.Io.Dir.cwd().deleteTree(c.io, folder) catch {};
+    var p: CurvePanel = .{ .gpa = gpa, .app = &app, .edited = stubEdited };
+    p.create();
+    const a = c.arena;
+    p.sync(try app.recipe(a), true);
+    try expect(p.count == 2 and p.points[1][0] == 1 and p.points[1][1] == 1, "starts as {any}", .{p.points[0..p.count]});
+
+    // A press in the middle makes a point; near one takes it; the ends only go up and down.
+    const middle = p.take(0.5, 0.6, 0.03).?;
+    try expect(middle == 1 and p.count == 3, "made {d}, {d} points", .{ middle, p.count });
+    try expect(p.take(0.51, 0.61, 0.03).? == 1 and p.count == 3, "a second point right beside the first", .{});
+    p.move(1, 5, 0.7);
+    try expect(p.points[1][0] < 1 and p.points[1][1] == 0.7, "moved past the end: {any}", .{p.points[1]});
+    p.move(0, 0.4, 0.1);
+    try expect(p.points[0][0] == 0 and p.points[0][1] == 0.1, "the end left its place: {any}", .{p.points[0]});
+
+    // Full, and a point can't be squeezed against its neighbour.
+    const gaps = [_]f32{ 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5 };
+    var made: usize = 0;
+    for (gaps) |x| {
+        if (p.take(x, 0.2, 0.001) != null) made += 1;
+    }
+    try expect(p.count == Recipe.max_curve_points, "{d} points", .{p.count});
+    try expect(p.take(0.03, 0.9, 0.001) == null and p.count == Recipe.max_curve_points, "past full", .{});
+    while (p.count > 2) p.drop(1);
+    p.drop(0);
+    p.drop(1);
+    try expect(p.count == 2 and p.points[0][1] == 0 and p.points[1][1] == 1, "not back to straight: {any}", .{p.points[0..p.count]});
+
+    // Through the real handlers on a real widget, 200x200: in tones, x/200 and 1 - y/200.
+    gtk.gtk_widget_measure(p.widget, gtk.horizontal, -1, null, null, null, null);
+    gtk.gtk_widget_measure(p.widget, gtk.vertical, 200, null, null, null, null);
+    gtk.gtk_widget_allocate(p.widget, 200, 240, -1, null);
+    try expect(gtk.gtk_widget_get_height(p.area) >= 180, "the curve is {d} high", .{gtk.gtk_widget_get_height(p.area)});
+    const h: f64 = @floatFromInt(gtk.gtk_widget_get_height(p.area));
+    const steps = (try app.currentSession().?.recipe(a)).curve.len;
+    try expect(steps == 0, "curve before the press: {d}", .{steps});
+    CurvePanel.onBegin(undefined, 50, h * 0.75, &p);
+    CurvePanel.onUpdate(undefined, 0, h * 0.15, &p);
+    CurvePanel.onUpdate(undefined, 0, h * 0.25, &p);
+    CurvePanel.onEnd(undefined, 0, 0, &p);
+    var r = try app.recipe(a);
+    try expect(r.curve.len == 3 and @abs(r.curve[1][0] - 0.25) < 0.01 and r.curve[1][1] == 0 and !r.isDefault(), "dragged: {any}", .{r.curve});
+    _ = try app.undo();
+    try expect((try app.recipe(a)).curve.len == 0, "a press and its drag aren't one undo step", .{});
+    p.sync(try app.recipe(a), true);
+    try expect(p.count == 2, "undo didn't reach the panel", .{});
+    // A double-click on a point takes it away, and a straight curve leaves no trace.
+    CurvePanel.onBegin(undefined, 100, h * 0.3, &p);
+    CurvePanel.onEnd(undefined, 0, 0, &p);
+    try expect((try app.recipe(a)).curve.len == 3, "a click didn't add a point", .{});
+    CurvePanel.onPressed(undefined, 1, 100, h * 0.3, &p);
+    try expect(p.count == 3, "one press took it away", .{});
+    CurvePanel.onPressed(undefined, 2, 100, h * 0.3, &p);
+    try expect((try app.recipe(a)).isDefault(), "a straight curve left a trace: {any}", .{(try app.recipe(a)).curve});
+    // Reset: a whole curve straight in one go, one undo step, and nothing to reset after it.
+    try app.edit("{\"curve\":[[0,0.1],[0.3,0.2],[0.6,0.9],[0.8,0.7],[1,0.9]]}", 0);
+    p.sync(try app.recipe(a), true);
+    try expect(p.count == 5 and gtk.gtk_widget_get_sensitive(p.reset_button) != 0, "nothing to reset: {d}", .{p.count});
+    gtk.g_signal_emit_by_name(p.reset_button, "clicked");
+    try expect((try app.recipe(a)).isDefault() and p.count == 2 and gtk.gtk_widget_get_sensitive(p.reset_button) == 0, "Reset left {any}", .{(try app.recipe(a)).curve});
+    _ = try app.undo();
+    try expect((try app.recipe(a)).curve.len == 5, "Reset wasn't one undo step", .{});
+    p.sync(try app.recipe(a), true);
+    CurvePanel.onNamePressed(undefined, 1, 0, 0, &p);
+    try expect((try app.recipe(a)).curve.len == 5, "one press on the name reset it", .{});
+    CurvePanel.onNamePressed(undefined, 2, 0, 0, &p);
+    try expect((try app.recipe(a)).isDefault(), "a double-click on the name didn't reset it", .{});
+    // A mask's layer has no curve; another photo's points don't stay.
+    p.sync(.{ .curve = &.{.{ 0.5, 0.7 }} }, false);
+    try expect(p.count == 3, "a curve with only a middle point: {d}", .{p.count});
 }
 
 // A real canvas at a known size: 4:3 in 1040x840 puts the photo at 20,45, 1000x750.

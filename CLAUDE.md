@@ -26,7 +26,7 @@ scripts/subject-model.py   # click-a-subject's ONNX Runtime and model into ~/.co
 
 Layout: `src/main.zig` is the window; `src/app/` the rest of the editor (`app.zig` the state with no window,
 `pipeline.zig` image passes over `glsl/`, `canvas.zig` the photo, `sidebar.zig`, `slider.zig`, `looks_panel.zig`,
-`masks_panel.zig`, `subject.zig` (click a subject), `export_dialog.zig`, `exporter.zig`, `tools.zig` and `mcp.zig` Claude's side, `gtk.zig` and `gl.zig` the C APIs by hand).
+`masks_panel.zig`, `curve_panel.zig`, `subject.zig` (click a subject), `export_dialog.zig`, `exporter.zig`, `tools.zig` and `mcp.zig` Claude's side, `gtk.zig` and `gl.zig` the C APIs by hand).
 `src/core/` is `photo-core` (libvips, no window: `decode`, `encode` + `exif`, `Recipe`,
 `store`; its tests need `testdata/photos/` and skip without it).
 C APIs are declared by hand in Zig (`src/app/gtk.zig`, `src/app/gl.zig`, the `c` struct in `src/core/vips.zig`), only

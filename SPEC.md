@@ -37,7 +37,7 @@ Preview and export run the same shaders, so they match by construction.
 All processing is GLSL shaders on the GPU, used for both the live preview and the full-resolution export, so what you see is exactly what you get. Zig and libvips only decode, manage colour, encode and copy metadata.
 
 1. **Decode (libvips):** the camera JPEG is converted to linear float using its embedded ICC profile and uploaded as a float texture.
-2. **Base shader:** exposure in true stops, white balance, a filmic tone curve with soft highlight roll-off, and the per-colour mixer (do the mixer in OKLCH so hue shifts look natural).
+2. **Base shader:** exposure in true stops, white balance, a filmic tone curve with soft highlight roll-off, whites and blacks, vibrance, the per-colour mixer (do the mixer in OKLCH so hue shifts look natural), and the user's tone curve.
 3. **Look, masks and shaders:** the selected LUT, then each mask's own adjustments where it selects, then any shaders, in order (see Looks and shaders, and Masks, below).
 4. **Effect passes:** halation (bright areas blurred and tinted red-orange), grain (luminance-dependent, scaled to resolution) and vignette. Built in; each has its own slider.
 5. **Output:** convert to sRGB or Display P3 and dither. For export, the float pixels go back to Zig; libvips resizes, sharpens, encodes, embeds the ICC profile and copies the metadata untouched.
@@ -63,7 +63,7 @@ There are two separate layers that stack: one **look** (a LUT) for the colour ba
 | Per photo | One at a time | Any number, in order |
 | Can do | Colour and tone only | Anything: colour, split toning, light leaks, blur, bloom, custom grain |
 
-Order in the pipeline: base adjustments → look → masks → shaders → built-in grain, halation and vignette → output.
+Order in the pipeline: base adjustments → tone curve → look → masks → shaders → built-in grain, halation and vignette → output.
 
 ```glsl
 // shader.glsl: split toning, cool shadows and warm highlights
@@ -145,8 +145,12 @@ Recipes live in a hidden `.photo-editor/` folder at the root of the folder you o
     "contrast": 8,
     "highlights": -20,
     "shadows": 25,
+    "whites": 10,
+    "blacks": -5,
+    "vibrance": 15,
     "saturation": 5
   },
+  "curve": [[0, 0], [0.25, 0.2], [0.75, 0.8], [1, 1]],
   "look": { "name": "classic-chrome.cube", "strength": 80 },
   "shaders": [
     { "name": "split-tone", "strength": 60, "params": { "shadows": 0.5, "highlights": 0.7 } }
@@ -177,7 +181,8 @@ Recipes live in a hidden `.photo-editor/` folder at the root of the folder you o
 | Field | Range | Notes |
 | --- | --- | --- |
 | `exposure` | −5 to 5 EV | True stops, applied in linear light |
-| `temperature`, `tint`, `contrast`, `highlights`, `shadows`, `saturation` | −100 to 100 | 0 = unchanged |
+| `temperature`, `tint`, `contrast`, `highlights`, `shadows`, `whites`, `blacks`, `vibrance`, `saturation` | −100 to 100 | 0 = unchanged |
+| `curve` | Up to 12 points, in and out, 0 to 1 | The whole photo's tone curve, on display values, before the look; without a point at an end it starts at black and ends at white; empty is straight |
 | `look.name` | A `.cube` file in the looks folder | `none` = no look |
 | `look.strength` | 0 to 100 | Blends the LUT in |
 | `shaders` | List of { name, strength, params } | Applied in order, after the look |
@@ -204,7 +209,7 @@ Undo history is kept in memory for the session and works for edits from either s
 The UI follows the design canvas (see `design/`): folder sidebar, photo in the middle, tool panel on the right. Where the design and this spec differ, this spec wins.
 
 - **Folder browser:** Open folder (native dialog), thumbnail grid separated by subfolder and by the day taken (from EXIF), a dot on edited photos, filters for edited / not edited and by day. Remember the last folder. ← → switches photos, among those the filters show.
-- **Adjust:** Exposure, Contrast, Highlights, Shadows, Temperature, Tint, Saturation, Sharpen, Noise reduction. Double-click a slider to reset it; the wheel over its track moves it. At the top, the layers: the whole photo and its masks. Pick a layer and the same sliders edit it; a mask adds its blur, its limits, its own colour mixer and handles on the photo. Sharpen and noise reduction are for the whole photo.
+- **Adjust:** Exposure, Contrast, Highlights, Shadows, Whites, Blacks, a tone curve, Temperature, Tint, Vibrance, Saturation, Sharpen, Noise reduction. Double-click a slider to reset it; the wheel over its track moves it. At the top, the layers: the whole photo and its masks. Pick a layer and the same sliders edit it; a mask adds its blur, its limits, its own colour mixer and handles on the photo. Sharpen, noise reduction and the curve are for the whole photo.
 - **Looks:** a grid of looks (LUT files), each previewed on the current photo, plus Strength, Grain (amount, size) and Halation sliders. A collapsed Colour section holds the per-colour mixer, and a Shaders list below lets you add, reorder and toggle shaders.
 - **Crop:** aspect ratios (Original, 1:1, 4:5, 3:2, 16:9), drag handles, Straighten, Rotate 90°, Flip.
 - **Before / after:** hold `\` or click the toggle to see the original.

@@ -13,6 +13,7 @@ edits: Edits = .{},
 look: Look = .{},
 shaders: []const ShaderUse = &.{},
 masks: []const Mask = &.{},
+curve: []const [2]f32 = &.{},
 colour: Colour = .{},
 halation: f32 = 0,
 grain: Grain = .{},
@@ -31,6 +32,9 @@ pub const Edits = struct {
     contrast: f32 = 0,
     highlights: f32 = 0,
     shadows: f32 = 0,
+    whites: f32 = 0,
+    blacks: f32 = 0,
+    vibrance: f32 = 0,
     saturation: f32 = 0,
 };
 
@@ -73,6 +77,8 @@ pub const Detail = struct {
     noise: f32 = 0,
 };
 
+pub const max_curve_points = 12;
+pub const curve_samples = 256;
 pub const max_masks = 8;
 pub const max_mask_points = 16;
 
@@ -269,7 +275,7 @@ fn clampField(v: *f32, lo: f32, hi: f32) void {
 
 fn clampEdits(e: *Edits) void {
     clampField(&e.exposure, -max_exposure, max_exposure);
-    inline for (.{ "temperature", "tint", "contrast", "highlights", "shadows", "saturation" }) |name| clampField(&@field(e, name), -100, 100);
+    inline for (.{ "temperature", "tint", "contrast", "highlights", "shadows", "whites", "blacks", "vibrance", "saturation" }) |name| clampField(&@field(e, name), -100, 100);
 }
 
 fn clampColour(c: *Colour) void {
@@ -303,8 +309,31 @@ fn clampMask(m: *Mask) void {
     clampColour(&m.colour);
 }
 
+fn clampCurve(r: *Recipe) void {
+    if (r.curve.len > max_curve_points) r.curve = r.curve[0..max_curve_points];
+    const points = @constCast(r.curve);
+    for (points) |*point| for (point) |*v| clampField(v, 0, 1);
+    std.mem.sort([2]f32, points, {}, struct {
+        fn less(_: void, a: [2]f32, b: [2]f32) bool {
+            return a[0] < b[0];
+        }
+    }.less);
+    // Two points in one place would make a jump: the later one wins, the first stays the first.
+    var n: usize = 0;
+    for (points) |point| {
+        if (n > 0 and point[0] - points[n - 1][0] < min_curve_gap) {
+            if (n > 1) points[n - 1] = point;
+            continue;
+        }
+        points[n] = point;
+        n += 1;
+    }
+    r.curve = points[0..n];
+}
+
 pub fn clamp(r: *Recipe) void {
     clampEdits(&r.edits);
+    clampCurve(r);
     clampField(&r.look.strength, 0, 100);
     if (r.look.name.len == 0) r.look.name = no_look;
     for (@constCast(r.shaders)) |*sh| clampField(&sh.strength, 0, 100);
@@ -324,6 +353,49 @@ pub fn clamp(r: *Recipe) void {
     clampField(&rect[1], 0, 1 - min_crop);
     clampField(&rect[2], min_crop, 1 - rect[0]);
     clampField(&rect[3], min_crop, 1 - rect[1]);
+}
+
+const min_curve_gap = 0.01;
+
+/// The tone curve as a table from black to white, for the pipeline. A smooth line through the points
+/// that never overshoots between them (monotone cubic); without a point at either end, it starts at
+/// black and ends at white.
+pub fn curveTable(points: []const [2]f32, out: *[curve_samples]f32) void {
+    var xs: [max_curve_points + 2]f32 = undefined;
+    var ys: [max_curve_points + 2]f32 = undefined;
+    var n: usize = 0;
+    if (points.len == 0 or points[0][0] > 0) {
+        xs[0] = 0;
+        ys[0] = 0;
+        n = 1;
+    }
+    for (points[0..@min(points.len, max_curve_points)]) |p| {
+        xs[n] = p[0];
+        ys[n] = p[1];
+        n += 1;
+    }
+    if (xs[n - 1] < 1) {
+        xs[n] = 1;
+        ys[n] = 1;
+        n += 1;
+    }
+    var tangents: [max_curve_points + 2]f32 = undefined;
+    for (0..n) |i| {
+        const before = if (i > 0) (ys[i] - ys[i - 1]) / (xs[i] - xs[i - 1]) else null;
+        const after = if (i + 1 < n) (ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]) else null;
+        tangents[i] = if (before == null) after.? else if (after == null) before.? else if (before.? * after.? <= 0) 0 else 2 * before.? * after.? / (before.? + after.?);
+    }
+    var k: usize = 0;
+    for (out, 0..) |*o, i| {
+        const x = @as(f32, @floatFromInt(i)) / (curve_samples - 1);
+        while (k + 2 < n and x > xs[k + 1]) k += 1;
+        const h = xs[k + 1] - xs[k];
+        const t = (x - xs[k]) / h;
+        const t2 = t * t;
+        const t3 = t2 * t;
+        const y = (2 * t3 - 3 * t2 + 1) * ys[k] + (t3 - 2 * t2 + t) * h * tangents[k] + (-2 * t3 + 3 * t2) * ys[k + 1] + (t3 - t2) * h * tangents[k + 1];
+        o.* = std.math.clamp(y, 0, 1);
+    }
 }
 
 /// "2026-10-16T13:30:00Z" for `updatedAt`, from seconds since the epoch.

@@ -105,6 +105,7 @@ pub extern fn gtk_widget_add_css_class(widget: *anyopaque, name: [*:0]const u8) 
 pub extern fn gtk_widget_remove_css_class(widget: *anyopaque, name: [*:0]const u8) void;
 pub extern fn gtk_widget_set_visible(widget: *anyopaque, on: c_int) void;
 pub extern fn gtk_widget_set_sensitive(widget: *anyopaque, on: c_int) void;
+pub extern fn gtk_widget_get_sensitive(widget: *anyopaque) c_int;
 pub extern fn gtk_widget_set_halign(widget: *anyopaque, a: c_int) void;
 pub extern fn gtk_widget_set_valign(widget: *anyopaque, a: c_int) void;
 pub extern fn gtk_widget_set_tooltip_text(widget: *anyopaque, text: ?[*:0]const u8) void;

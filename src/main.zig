@@ -19,6 +19,7 @@ const Sidebar = @import("app/sidebar.zig");
 const Slider = @import("app/slider.zig");
 const LooksPanel = @import("app/looks_panel.zig");
 const MasksPanel = @import("app/masks_panel.zig");
+const CurvePanel = @import("app/curve_panel.zig");
 const Subject = @import("app/subject.zig");
 const Exporter = @import("app/exporter.zig");
 const ExportDialog = @import("app/export_dialog.zig");
@@ -43,6 +44,7 @@ var canvas: Canvas = undefined;
 var sidebar: Sidebar = undefined;
 var looks_panel: LooksPanel = undefined;
 var masks_panel: MasksPanel = undefined;
+var curve_panel: CurvePanel = undefined;
 var subject: Subject = undefined;
 var exporter: Exporter = undefined;
 var export_dialog: ExportDialog = undefined;
@@ -174,8 +176,11 @@ var fields = [_]Field{
     .{ .group = "edits", .field = "contrast", .label = "Contrast", .min = -100, .max = 100 },
     .{ .group = "edits", .field = "highlights", .label = "Highlights", .min = -100, .max = 100 },
     .{ .group = "edits", .field = "shadows", .label = "Shadows", .min = -100, .max = 100 },
+    .{ .group = "edits", .field = "whites", .label = "Whites", .min = -100, .max = 100 },
+    .{ .group = "edits", .field = "blacks", .label = "Blacks", .min = -100, .max = 100 },
     .{ .group = "edits", .field = "temperature", .label = "Temperature", .min = -100, .max = 100 },
     .{ .group = "edits", .field = "tint", .label = "Tint", .min = -100, .max = 100 },
+    .{ .group = "edits", .field = "vibrance", .label = "Vibrance", .min = -100, .max = 100 },
     .{ .group = "edits", .field = "saturation", .label = "Saturation", .min = -100, .max = 100 },
     .{ .group = "detail", .field = "sharpen", .label = "Sharpen", .min = 0, .max = 100, .unit = .plain },
     .{ .group = "detail", .field = "noise", .label = "Noise reduction", .min = 0, .max = 100, .unit = .plain },
@@ -183,8 +188,8 @@ var fields = [_]Field{
 var detail_title: *anyopaque = undefined;
 const section_before = [_]struct { index: usize, title: [:0]const u8 }{
     .{ .index = 0, .title = "Light" },
-    .{ .index = 4, .title = "Colour" },
-    .{ .index = 7, .title = "Detail" },
+    .{ .index = 6, .title = "Colour" },
+    .{ .index = 10, .title = "Detail" },
 };
 
 fn readField(r: Recipe, group: []const u8, field: []const u8) f32 {
@@ -218,6 +223,7 @@ fn syncControls() void {
     const layer = masks_panel.layer(r);
     var shown = r;
     if (layer) |m| shown.edits = m.edits;
+    curve_panel.sync(r, layer == null);
     for (&fields) |*f| f.slider.set(readField(shown, f.group, f.field));
     // Sharpening and noise reduction are for the whole photo.
     gtk.gtk_widget_set_visible(detail_title, @intFromBool(layer == null));
@@ -582,7 +588,7 @@ fn onRedo(_: *anyopaque, _: ?*anyopaque) callconv(.c) void {
 }
 fn onResetSliders(_: *anyopaque, _: ?*anyopaque) callconv(.c) void {
     if (masks_panel.selected != null) return masks_panel.resetEdits();
-    app.edit("{\"edits\":null,\"detail\":null}", 0) catch return;
+    app.edit("{\"edits\":null,\"detail\":null,\"curve\":null}", 0) catch return;
     syncControls();
     edited();
 }
@@ -705,6 +711,10 @@ fn buildAdjust() *anyopaque {
     for (&fields, 0..) |*f, i| {
         for (section_before) |section| if (section.index == i) {
             const heading = sectionTitle(section.title);
+            if (std.mem.eql(u8, section.title, "Colour")) {
+                curve_panel.create();
+                gtk.gtk_box_append(panel, curve_panel.widget);
+            }
             if (std.mem.eql(u8, section.title, "Detail")) {
                 gtk.gtk_box_append(panel, masks_panel.mixer_widget);
                 detail_title = heading;
@@ -1212,6 +1222,7 @@ pub fn main(init: std.process.Init) !u8 {
     subject = .{ .gpa = gpa, .io = init.io, .pool = &pool, .models_dir = try std.fmt.allocPrint(arena, "{s}/models", .{config_dir}) };
     app.subject = &subject;
     masks_panel = .{ .gpa = gpa, .app = &app, .canvas = &canvas, .subject = &subject, .edited = edited, .layer_changed = syncControls };
+    curve_panel = .{ .gpa = gpa, .app = &app, .edited = edited };
 
     const application = gtk.gtk_application_new("app.doka.Doka", gtk.non_unique);
     defer gtk.g_object_unref(application);

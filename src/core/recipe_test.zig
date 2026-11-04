@@ -252,3 +252,42 @@ test "an aspect and a focus point make a crop" {
     try testing.expectEqual([4]f32{ 0.25, 0.25, 0.5, 0.5 }, f);
     try testing.expectEqual(1.5, Recipe.aspectRatio("original", .{ 3, 2 }).?);
 }
+
+test "a tone curve goes through its points, never overshoots, and is straight without any" {
+    var table: [Recipe.curve_samples]f32 = undefined;
+    Recipe.curveTable(&.{}, &table);
+    for (table, 0..) |v, i| try testing.expectApproxEqAbs(@as(f32, @floatFromInt(i)) / 255, v, 1e-5);
+
+    Recipe.curveTable(&.{ .{ 0, 0 }, .{ 0.25, 0.15 }, .{ 0.75, 0.85 }, .{ 1, 1 } }, &table);
+    try testing.expectApproxEqAbs(@as(f32, 0.15), table[64], 0.01);
+    try testing.expectApproxEqAbs(@as(f32, 0.85), table[191], 0.01);
+    for (table[1..], table[0..255]) |now, before| try testing.expect(now >= before);
+
+    // Only a middle point: the ends stay on black and white.
+    Recipe.curveTable(&.{.{ 0.5, 0.7 }}, &table);
+    try testing.expectEqual(0, table[0]);
+    try testing.expectEqual(1, table[255]);
+    try testing.expectApproxEqAbs(@as(f32, 0.7), table[128], 0.01);
+
+    // A flat stretch stays flat: no bulge past its height.
+    Recipe.curveTable(&.{ .{ 0, 0 }, .{ 0.3, 0.5 }, .{ 0.7, 0.5 }, .{ 1, 1 } }, &table);
+    for (table[77..179]) |v| try testing.expectApproxEqAbs(@as(f32, 0.5), v, 1e-4);
+}
+
+test "a recipe's curve comes back in order, in range and without doubles" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const r = try Recipe.parse(a,
+        \\{"curve":[[0.8,2],[0.2,-1],[0.2,0.3]],
+        \\"edits":{"whites":500,"blacks":-500,"vibrance":40}}
+    );
+    try testing.expectEqual(2, r.curve.len);
+    try testing.expectEqual([2]f32{ 0.2, 0 }, r.curve[0]);
+    try testing.expectEqual([2]f32{ 0.8, 1 }, r.curve[1]);
+    try testing.expectEqual(100, r.edits.whites);
+    try testing.expectEqual(-100, r.edits.blacks);
+    const again = try Recipe.parse(a, try r.writeAlloc(a));
+    try testing.expectEqualDeep(r.curve, again.curve);
+    try testing.expect(!r.isDefault());
+}

@@ -53,7 +53,7 @@ its colour work into a new look (`bake_look`). If the app wasn't open, open it a
 | Ctrl+E | Export |
 | Ctrl+O | Open folder |
 | Ctrl/Shift-click a thumbnail | Pick several for export |
-| double-click a slider or its name | Reset it |
+| double-click a slider or its name, or the Curve title | Reset it |
 
 ## Credits
 
