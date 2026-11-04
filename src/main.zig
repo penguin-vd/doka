@@ -20,6 +20,7 @@ const Slider = @import("app/slider.zig");
 const LooksPanel = @import("app/looks_panel.zig");
 const MasksPanel = @import("app/masks_panel.zig");
 const CurvePanel = @import("app/curve_panel.zig");
+const Sheet = @import("app/sheet.zig");
 const Subject = @import("app/subject.zig");
 const Exporter = @import("app/exporter.zig");
 const ExportDialog = @import("app/export_dialog.zig");
@@ -45,6 +46,7 @@ var sidebar: Sidebar = undefined;
 var looks_panel: LooksPanel = undefined;
 var masks_panel: MasksPanel = undefined;
 var curve_panel: CurvePanel = undefined;
+var sheet: Sheet = undefined;
 var subject: Subject = undefined;
 var exporter: Exporter = undefined;
 var export_dialog: ExportDialog = undefined;
@@ -106,6 +108,7 @@ const css =
     \\.thumb.empty { background: transparent; }
     \\.thumb.current { outline: 2px solid #f4f4f4; outline-offset: -2px; }
     \\.thumb.selected { outline: 1px dashed #f4f4f4; outline-offset: -1px; }
+    \\.thumb-pick { min-width: 8px; min-height: 8px; margin: 4px; background: #f4f4f4; box-shadow: 0 0 0 1px #161616; }
     \\.thumb-dot { min-width: 7px; min-height: 7px; margin: 4px; border-radius: 50%; background: #f4f4f4; box-shadow: 0 0 0 1px #161616; }
     \\.faint { color: #919191; font-weight: 400; font-size: 12px; }
     \\.section-title { font-weight: 500; margin-top: 8px; padding-top: 12px; border-top: 1px solid #363636; }
@@ -624,6 +627,10 @@ fn onKey(_: *anyopaque, key: c_uint, _: c_uint, state: c_uint, _: ?*anyopaque) c
         gtk.key_left => stepPhoto(-1),
         gtk.key_right => stepPhoto(1),
         '\\' => setBefore(true),
+        'p', 'P' => {
+            app.togglePick() catch |err| log.err("pick: {t}", .{err});
+            hookPicksChanged();
+        },
         gtk.key_escape => {
             const had_focus = gtk.gtk_window_get_focus(window) != null;
             gtk.gtk_window_set_focus(window, null);
@@ -849,6 +856,16 @@ fn openExport() void {
     defer arena.deinit();
     const picked = sidebar.selection(arena.allocator()) catch return;
     if (picked.len > 1) return export_dialog.open(picked);
+    // On the Picked filter, Ctrl+E is for what it shows.
+    if (app.status == .picked) {
+        const a = arena.allocator();
+        const indices = app.picks(a) catch return;
+        if (indices.len > 0) {
+            const rels = a.alloc([]const u8, indices.len) catch return;
+            for (indices, rels) |i, *rel| rel.* = app.folder.?.photos[i].rel;
+            return export_dialog.open(rels);
+        }
+    }
     const rel = app.currentRel() orelse return;
     export_dialog.open(&.{rel});
 }
@@ -893,6 +910,7 @@ fn hookPhotoChanged() void {
 
 fn hookLibraryChanged() void {
     if (canvas.makeCurrent()) canvas.reloadShaders();
+    sheet.libraryChanged();
     looks.clear();
     preview_looks.clear();
     canvas.lookChanged();
@@ -929,6 +947,28 @@ fn hookBake(a: std.mem.Allocator, title: []const u8, size: u32) ![]const u8 {
     const lattice = try canvas.pipeline.?.bakeLattice(gpa, r, size);
     defer gpa.free(lattice);
     return @import("app/cube.zig").write(a, title, size, lattice);
+}
+
+fn hookSheet(call: *Mcp.Call, indices: []const u32, lead: []const u8) anyerror!void {
+    return sheet.start(call, indices, lead);
+}
+
+fn hookSelected(a: std.mem.Allocator) anyerror![]const u32 {
+    const f = &(app.folder orelse return error.NoFolder);
+    var out: std.ArrayList(u32) = .empty;
+    if (sidebar.selected.count() < 2) return out.items;
+    for (0..f.photos.len) |i| if (sidebar.selected.contains(@intCast(i))) try out.append(a, @intCast(i));
+    return out.items;
+}
+
+fn hookPicksChanged() void {
+    sidebar.picksChanged();
+    syncHeader();
+}
+
+fn sheetIsEs() bool {
+    const context = gtk.gtk_gl_area_get_context(canvas.area) orelse return true;
+    return gtk.gdk_gl_context_get_use_es(context) != 0;
 }
 
 fn hookScreenshot(shot: App.Shot) void {
@@ -1032,9 +1072,8 @@ fn hookExport(call: *Mcp.Call, args: std.json.Value) anyerror!void {
     var rels: std.ArrayList([]const u8) = .empty;
     var extras: Exporter.Extras = .{ .call = call };
     if (args == .object) {
-        if (args.object.get("names")) |names| if (names == .array) for (names.array.items) |n| {
-            if (n != .string) continue;
-            try rels.append(a, f.photos[try tools.find(f, n.string)].rel);
+        if (args.object.get("names") != null) for (try tools.photoList(&app, a, args, "names")) |i| {
+            try rels.append(a, f.photos[i].rel);
         };
         if (args.object.get("format")) |v| if (v == .string) {
             options.format = std.meta.stringToEnum(core.encode.Format, v.string) orelse return error.BadFormat;
@@ -1206,6 +1245,9 @@ pub fn main(init: std.process.Init) !u8 {
         .export_for_claude = hookExport,
         .compile_shader = hookCompile,
         .bake = hookBake,
+        .sheet = hookSheet,
+        .selected = hookSelected,
+        .picks_changed = hookPicksChanged,
     };
     defer app.deinit();
     const default_folder = try Settings.defaultExportFolder(arena, init.environ_map);
@@ -1223,6 +1265,7 @@ pub fn main(init: std.process.Init) !u8 {
     app.subject = &subject;
     masks_panel = .{ .gpa = gpa, .app = &app, .canvas = &canvas, .subject = &subject, .edited = edited, .layer_changed = syncControls };
     curve_panel = .{ .gpa = gpa, .app = &app, .edited = edited };
+    sheet = .{ .gpa = gpa, .app = &app, .pool = &pool, .looks = .{ .gpa = gpa, .library = &library }, .gl_current = exportGlCurrent, .es = sheetIsEs };
 
     const application = gtk.gtk_application_new("app.doka.Doka", gtk.non_unique);
     defer gtk.g_object_unref(application);

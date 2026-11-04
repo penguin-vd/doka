@@ -57,6 +57,31 @@ pub fn save(io: Io, gpa: std.mem.Allocator, root: Io.Dir, rel: []const u8, recip
     try writeAtomic(io, gpa, root, path, json);
 }
 
+const picks_path = dir_name ++ "/picks.json";
+
+/// The photos picked in this folder, by path. Strings live in `arena`.
+pub fn loadPicks(io: Io, arena: std.mem.Allocator, root: Io.Dir) ![]const []const u8 {
+    const json = root.readFileAlloc(io, picks_path, arena, .limited(1 << 24)) catch |err| switch (err) {
+        error.FileNotFound => return &.{},
+        else => return err,
+    };
+    return std.json.parseFromSliceLeaky([]const []const u8, arena, json, .{ .allocate = .alloc_always });
+}
+
+/// None picked is no file, as an unedited photo has no recipe.
+pub fn savePicks(io: Io, gpa: std.mem.Allocator, root: Io.Dir, names: []const []const u8) !void {
+    if (names.len == 0) {
+        root.deleteFile(io, picks_path) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        };
+        return;
+    }
+    const json = try std.json.Stringify.valueAlloc(gpa, names, .{ .whitespace = .indent_1 });
+    defer gpa.free(json);
+    try writeAtomic(io, gpa, root, picks_path, json);
+}
+
 /// Writes through a temporary file and a rename, so a crash never leaves half a file.
 pub fn writeAtomic(io: Io, gpa: std.mem.Allocator, root: Io.Dir, path: []const u8, data: []const u8) !void {
     if (std.fs.path.dirname(path)) |dir| try root.createDirPath(io, dir);

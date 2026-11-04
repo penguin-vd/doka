@@ -95,6 +95,12 @@ Changed for what someone would notice, a line under Decided for a choice whose r
   away. Its own Reset, or a double-click on its name, makes it straight again; so does Reset sliders.
   It goes into exports and baked looks.
 - Claude's set_edits takes `whites`, `blacks`, `vibrance` and `curve`.
+- Claude sees many photos at once: contact_sheet shows up to 30 with their edits, numbered by their
+  position in the folder, with a sharpness number per photo. Those numbers, or "picked", or "selected"
+  for what's Ctrl-clicked, work wherever a tool takes photos.
+- Picks: Claude's pick_photos or P keeps a folder's chosen photos. They stay after a restart and when
+  clicking around, have a mark and a Picked filter in the sidebar, and Ctrl+E on that filter exports them.
+- Reopening the open folder right after an edit no longer loses that photo's edited mark.
 
 ### Decided
 
@@ -167,3 +173,11 @@ Changed for what someone would notice, a line under Decided for a choice whose r
   Whites adds, and white could never clip on purpose.
 - The curve works per channel on display values, before the look, as a classic curve does: its
   contrast also adds some saturation, and masks don't have one.
+- A contact sheet goes through its own pipeline and draws its numbers itself: never the photo on screen's
+  pipeline, and a small digit font in place of a text library. About 1568 px long: what Claude sees
+  without it being shrunk first. Its cells take the shape most of its photos are.
+- Sharpness is the strongest fine detail among 8×8 tiles: at f/1.8 most of a sharp photo isn't, so an
+  average over all of it would favour busy backgrounds.
+- Picks are a file of their own, not part of a recipe: being picked isn't an edit, and clicking a photo
+  must not lose them, as it does a Ctrl-click selection.
+- No bulk edit: the owner edits photos one at a time with Claude.

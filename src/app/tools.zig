@@ -8,6 +8,7 @@ const Recipe = core.Recipe;
 
 const App = @import("app.zig");
 const Mcp = @import("mcp.zig");
+const Sheet = @import("sheet.zig");
 const Library = @import("library.zig");
 
 const log = std.log.scoped(.tools);
@@ -29,6 +30,12 @@ pub const instructions =
     \\  the screenshot, place the mask, then call get_view with show_mask to check where it landed.
     \\- For a person or object, mask_subject follows its outline: give points on it, and points on what it
     \\  wrongly took, and look at the red in the screenshot it returns. Gradients don't need the download.
+    \\- Asked to choose photos: look through the folder with contact_sheet (30 at a time is about 300 px each),
+    \\  each numbered with its position; everywhere a tool takes photos, those numbers work. Then compare
+    \\  the candidates on a sheet of 6 to 12. Take one of a burst, and variety over near-copies. Each line has
+    \\  a sharpness number: only worth comparing between shots of the same scene. Keep your choice with
+    \\  pick_photos; it stays, and the user sees it. Don't edit what you chose unless asked.
+    \\- Edit one photo at a time: open_photo it, then set_edits as above.
     \\- Afterwards, tell the user briefly what you changed.
 ;
 
@@ -57,17 +64,23 @@ pub const definitions =
     \\ "description":"Finds a person or object from points on it, follows its outline, and adds it as a mask with these edits (or changes the mask at position `mask`). Takes a second or two the first time on a photo, far less after. Returns the view with that mask painted red: check it, and call again with `mask` and more points if it took too much or too little. Points are [x,y], 0..1 of the whole photo as decoded, upright, (0,0) top-left: NOT of the crop or rotated view. Everything else as a mask in set_edits. Needs scripts/subject-model.py to have been run once.",
     \\ "inputSchema":{"type":"object","properties":{"points":{"type":"array","description":"Points on the subject","items":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2}},"exclude":{"type":"array","description":"Points on what doesn't belong","items":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2}},"mask":{"type":"integer","minimum":0,"description":"Change this mask, from 0, instead of adding one"},"name":{"type":"string","description":"Shown to the user, like 'Portrait'"},"invert":{"type":"boolean"},"blur":{"type":"number","minimum":0,"maximum":100},"brightness":{"type":"object"},"hue":{"type":"object"},"edits":{"type":"object"},"colour":{"type":"object"},"photo":{"type":"string","description":"The photo you mean to edit; refused if another one is open"}},"required":["points"]}},
     \\{"name":"open_photo","title":"Open another photo",
-    \\ "description":"Opens a photo of the folder by name (its path in the folder, or just the file name), or the next or previous one. Returns the new view.",
-    \\ "inputSchema":{"type":"object","properties":{"name":{"type":"string"},"direction":{"type":"string","enum":["next","previous"]}}}},
+    \\ "description":"Opens a photo of the folder by name (its path in the folder, or just the file name), by its position, or the next or previous one. Returns the new view.",
+    \\ "inputSchema":{"type":"object","properties":{"name":{"type":"string"},"position":{"type":"integer","minimum":1},"direction":{"type":"string","enum":["next","previous"]}}}},
     \\{"name":"list_photos","title":"List the folder's photos",
     \\ "description":"The open folder's photos, in order, each with whether it has edits (and for edited ones, whether the user or Claude changed it last, and when).",
     \\ "inputSchema":{"type":"object","properties":{"edited_only":{"type":"boolean","description":"Only the photos with edits"}}}},
+    \\{"name":"contact_sheet","title":"See many photos at once",
+    \\ "description":"Up to 30 photos in one picture, drawn with their edits, each marked with its position in the folder; and a line per photo with its name, time, exposure, a sharpness number (of its sharpest part; higher is sharper, and only worth comparing between shots of the same scene), who edited it and whether it is picked. The fewer you ask for, the bigger they are: 20 is good for looking through a folder, 6 to 12 for comparing faces or sharpness. Give photos, or walk the folder from start (a position; 1 by default) for count photos (20 by default), only those edited, unedited or picked if you ask. The text says what start to use next. Nothing changes, and the open photo stays open.",
+    \\ "inputSchema":{"type":"object","properties":{"photos":{"description":"Positions or names; or \"picked\" for the folder's picks, or \"selected\" for what the user Ctrl-clicked","anyOf":[{"type":"array","items":{"type":["integer","string"]}},{"type":"string","enum":["picked","selected"]}]},"start":{"type":"integer","minimum":1},"count":{"type":"integer","minimum":1,"maximum":30},"only":{"type":"string","enum":["edited","unedited","picked"]}}}},
+    \\{"name":"pick_photos","title":"Keep a choice of photos",
+    \\ "description":"Makes these photos the folder's picks, in place of any before: how to keep what you chose. Picks stay after a restart and when the user clicks around; each has a mark in the sidebar, and its Picked filter shows only them. The user can change them with P. An empty list clears them. Nothing else changes: nothing is edited. Use \"picked\" for photos in contact_sheet or export.",
+    \\ "inputSchema":{"type":"object","properties":{"photos":{"type":"array","items":{"type":["integer","string"]},"description":"Positions or names"}},"required":["photos"]}},
     \\{"name":"undo","title":"Undo the last change",
     \\ "description":"Undoes the last change to the open photo, one step, whoever made it. Returns the new view.",
     \\ "inputSchema":{"type":"object","properties":{"photo":{"type":"string","description":"The photo you mean; refused if another one is open"}}}},
     \\{"name":"export","title":"Export photos",
-    \\ "description":"Exports the open photo, or the named ones, with their edits (camera, lens, exposure and date always kept). Options default to the app's export settings; the folder defaults to ~/Pictures/Doka. An export never overwrites a file: -2, -3… is added. aspect (with focus) crops this export only; the recipe stays as it is.",
-    \\ "inputSchema":{"type":"object","properties":{"names":{"type":"array","items":{"type":"string"}},"folder":{"type":"string","description":"Absolute path; created if missing"},"name":{"type":"string","description":"File name without extension; with several photos, put before each photo's own name"},"aspect":{"type":"string","description":"1:1, 4:5, 3:2, 16:9 or original: a crop for this export only"},"focus":{"type":"array","items":{"type":"number"},"description":"[x, y] 0..1 to centre that crop on"},"format":{"type":"string","enum":["jpeg","png"]},"quality":{"type":"number","minimum":50,"maximum":100},"long_edge":{"type":"number","description":"Longest side in pixels; 0 = original size"},"gps":{"type":"boolean","description":"Keep the GPS location (default: the app's setting)"}}}},
+    \\ "description":"Exports the open photo, or those named, with their edits (camera, lens, exposure and date always kept). Options default to the app's export settings; the folder defaults to ~/Pictures/Doka. An export never overwrites a file: -2, -3… is added. aspect (with focus) crops this export only; the recipe stays as it is.",
+    \\ "inputSchema":{"type":"object","properties":{"names":{"description":"Positions or names; or \"picked\" or \"selected\"","anyOf":[{"type":"array","items":{"type":["integer","string"]}},{"type":"string","enum":["picked","selected"]}]},"folder":{"type":"string","description":"Absolute path; created if missing"},"name":{"type":"string","description":"File name without extension; with several photos, put before each photo's own name"},"aspect":{"type":"string","description":"1:1, 4:5, 3:2, 16:9 or original: a crop for this export only"},"focus":{"type":"array","items":{"type":"number"},"description":"[x, y] 0..1 to centre that crop on"},"format":{"type":"string","enum":["jpeg","png"]},"quality":{"type":"number","minimum":50,"maximum":100},"long_edge":{"type":"number","description":"Longest side in pixels; 0 = original size"},"gps":{"type":"boolean","description":"Keep the GPS location (default: the app's setting)"}}}},
     \\{"name":"list_looks","title":"List looks",
     \\ "description":"The installed looks: .cube LUTs in the looks folder, by file name (use it as look.name in set_edits) and title.",
     \\ "inputSchema":{"type":"object","properties":{}}},
@@ -120,6 +133,9 @@ fn explain(err: anyerror) []const u8 {
         error.ModelMissing => "this needs its download once: the user runs scripts/subject-model.py and restarts Doka",
         error.TooManyMasks => "a photo holds at most 8 masks",
         error.TooManyPoints => "a mask takes at most 16 points",
+        error.NothingSelected => "the user hasn't selected any photos: they Ctrl-click at least two in the sidebar",
+        error.NothingPicked => "this folder has no picks yet: see pick_photos",
+        error.NoPhotos => "no photos match",
         error.NotASubject => "the mask at that position isn't a subject mask",
         error.NoSuchMask => "the recipe has no mask at that position; they count from 0",
         error.InvalidEnumTag => "a mask's shape is whole, linear or radial",
@@ -166,7 +182,8 @@ fn dispatch(app: *App, a: std.mem.Allocator, call: *Mcp.Call, args: std.json.Val
     if (eql(name, "mask_subject")) return maskSubject(app, a, call, args);
     if (eql(name, "open_photo")) {
         const f = &(app.folder orelse return error.NoFolder);
-        const i = if (string(args, "name")) |n| try find(f, n) else if (string(args, "direction")) |d| blk: {
+        const position: ?std.json.Value = if (args == .object) args.object.get("position") else null;
+        const i = if (position) |v| try findValue(f, v) else if (string(args, "name")) |n| try find(f, n) else if (string(args, "direction")) |d| blk: {
             const cur = app.current orelse 0;
             if (eql(d, "next")) break :blk @min(cur + 1, f.photos.len - 1);
             if (eql(d, "previous")) break :blk cur -| 1;
@@ -175,6 +192,17 @@ fn dispatch(app: *App, a: std.mem.Allocator, call: *Mcp.Call, args: std.json.Val
         try app.open(i);
         app.hooks.photo_changed.?();
         return view(app, a, call, null);
+    }
+    if (eql(name, "contact_sheet")) return contactSheet(app, a, call, args);
+    if (eql(name, "pick_photos")) {
+        if (args != .object or args.object.get("photos") == null) return error.BadArguments;
+        const indices = try photoList(app, a, args, "photos");
+        try app.setPicks(indices);
+        app.hooks.picks_changed.?();
+        var out: Io.Writer.Allocating = .init(a);
+        try out.writer.print("{d} photos are the folder's picks now; the user sees them marked in the sidebar, and on its Picked filter.", .{indices.len});
+        for (indices) |i| try out.writer.print("\n{d}  {s}", .{ i + 1, app.folder.?.photos[i].rel });
+        return call.finish(try Mcp.textResult(app.gpa, out.written(), false));
     }
     if (eql(name, "undo")) {
         const s = (app.currentSession() orelse return error.NoPhoto);
@@ -411,6 +439,79 @@ pub fn find(f: *const App.Folder, name: []const u8) !usize {
     return found orelse error.NoSuchPhoto;
 }
 
+// A position in the folder, from 1, or a name.
+fn findValue(f: *const App.Folder, v: std.json.Value) !usize {
+    return switch (v) {
+        .string => |n| find(f, n),
+        .integer => |position| if (position >= 1 and position <= f.photos.len) @intCast(position - 1) else error.NoSuchPhoto,
+        else => error.BadArguments,
+    };
+}
+
+/// The photos a tool's argument means: positions and names, or "picked" or "selected". In the order given, once each.
+pub fn photoList(app: *App, a: std.mem.Allocator, args: std.json.Value, key: []const u8) ![]const u32 {
+    const f = &(app.folder orelse return error.NoFolder);
+    const v = args.object.get(key) orelse return error.BadArguments;
+    if (v == .string) {
+        if (eql(v.string, "picked")) {
+            const picks = try app.picks(a);
+            if (picks.len == 0) return error.NothingPicked;
+            return picks;
+        }
+        if (!eql(v.string, "selected")) return error.BadArguments;
+        const picked = try app.hooks.selected.?(a);
+        if (picked.len == 0) return error.NothingSelected;
+        return picked;
+    }
+    if (v != .array) return error.BadArguments;
+    var out: std.ArrayList(u32) = .empty;
+    for (v.array.items) |item| {
+        const i: u32 = @intCast(try findValue(f, item));
+        if (std.mem.indexOfScalar(u32, out.items, i) == null) try out.append(a, i);
+    }
+    return out.items;
+}
+
+fn intArg(args: std.json.Value, key: []const u8, default: i64) !i64 {
+    if (args != .object) return default;
+    const v = args.object.get(key) orelse return default;
+    return if (v == .integer) v.integer else error.BadArguments;
+}
+
+fn contactSheet(app: *App, a: std.mem.Allocator, call: *Mcp.Call, args: std.json.Value) !void {
+    const f = &(app.folder orelse return error.NoFolder);
+    const total = f.photos.len;
+    if (args == .object and args.object.get("photos") != null) {
+        const indices = try photoList(app, a, args, "photos");
+        const more = if (indices.len > Sheet.max_photos) try std.fmt.allocPrint(a, " Only the first {d} fit; ask for the rest separately.", .{Sheet.max_photos}) else "";
+        return app.hooks.sheet.?(call, indices, try std.fmt.allocPrint(a, "{d} of the {d} photos in {s}. The number on each is its position in the folder.{s}", .{ indices.len, total, f.name(), more }));
+    }
+    const count: usize = @intCast(std.math.clamp(try intArg(args, "count", 20), 1, Sheet.max_photos));
+    const start = try intArg(args, "start", 1);
+    if (start < 1 or start > total) return error.NoSuchPhoto;
+    const only = string(args, "only");
+    if (only) |o| if (!eql(o, "edited") and !eql(o, "unedited") and !eql(o, "picked")) return error.BadArguments;
+    const wanted = struct {
+        fn check(p: App.Photo, o: ?[]const u8) bool {
+            const kind = o orelse return true;
+            if (eql(kind, "picked")) return p.picked;
+            return p.edited == eql(kind, "edited");
+        }
+    }.check;
+    var indices: std.ArrayList(u32) = .empty;
+    var i: usize = @intCast(start - 1);
+    while (i < total and indices.items.len < count) : (i += 1) {
+        if (!wanted(f.photos[i], only)) continue;
+        try indices.append(a, @intCast(i));
+    }
+    // Is anything left past these?
+    var next = i;
+    while (next < total and !wanted(f.photos[next], only)) next += 1;
+    if (indices.items.len == 0) return error.NoPhotos;
+    const after = if (next < total) try std.fmt.allocPrint(a, "Next: start {d}.", .{next + 1}) else try a.dupe(u8, "That's the end of the folder.");
+    return app.hooks.sheet.?(call, indices.items, try std.fmt.allocPrint(a, "{d} photos from {s}, which has {d}. The number on each is its position in the folder. {s}", .{ indices.items.len, f.name(), total, after }));
+}
+
 fn listPhotos(app: *App, a: std.mem.Allocator, call: *Mcp.Call, edited_only: bool) !void {
     const f = &(app.folder orelse return error.NoFolder);
     var out: Io.Writer.Allocating = .init(a);
@@ -429,6 +530,10 @@ fn listPhotos(app: *App, a: std.mem.Allocator, call: *Mcp.Call, edited_only: boo
         try s.write(p.rel);
         try s.objectField("edited");
         try s.write(p.edited);
+        if (p.picked) {
+            try s.objectField("picked");
+            try s.write(true);
+        }
         if (p.edited) if (core.store.load(app.io, a, f.dir, p.rel) catch null) |r| {
             try s.objectField("updatedBy");
             try s.write(r.updatedBy);
@@ -482,6 +587,10 @@ fn writeView(app: *App, a: std.mem.Allocator, w: *Io.Writer) !void {
         try s.write(rel);
         try s.objectField("position");
         try s.print("\"{d} of {d}\"", .{ i + 1, f.photos.len });
+        if (f.photos[i].picked) {
+            try s.objectField("picked");
+            try s.write(true);
+        }
         try s.objectField("camera");
         try s.write(try std.fmt.allocPrint(a, "{s} {s} · {s} · {s} s · f/{s} · ISO {s} · {s} mm · {d}×{d} · taken {s}", .{
             info.make, info.model, info.lens, info.exposure, info.aperture, info.iso, info.focal_length, info.width, info.height, info.taken,

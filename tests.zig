@@ -7,5 +7,6 @@ test {
     _ = @import("src/app/slider.zig");
     _ = @import("src/app/crop.zig");
     _ = @import("src/app/masks_panel.zig");
+    _ = @import("src/app/sheet.zig");
     _ = @import("src/app/subject.zig");
 }

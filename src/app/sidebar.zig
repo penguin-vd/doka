@@ -19,12 +19,12 @@ row_of: std.ArrayList(u32) = .empty,
 // The rows in view: what a new thumbnail or a new current photo has to touch.
 live: std.ArrayList(*RowUi) = .empty,
 current: ?usize = null,
-// Photos picked with Ctrl or Shift for a batch export.
+// Photos selected with Ctrl or Shift for a batch export.
 selected: std.AutoHashMapUnmanaged(u32, void) = .empty,
 count_label: *anyopaque = undefined,
 name_label: *anyopaque = undefined,
 day_menu: *anyopaque = undefined,
-status_buttons: [3]*anyopaque = undefined,
+status_buttons: [4]*anyopaque = undefined,
 sticky: *anyopaque = undefined,
 adjustment: *anyopaque = undefined,
 // The days in the menu, in its order after "All days".
@@ -46,6 +46,7 @@ const Cell = struct {
     frame: *anyopaque,
     picture: *anyopaque,
     dot: *anyopaque,
+    pick_mark: *anyopaque,
     index: ?u32 = null,
     sidebar: *Sidebar,
 };
@@ -138,15 +139,18 @@ pub fn create(s: *Sidebar) *anyopaque {
     gtk.gtk_widget_add_css_class(filters, "filters");
     const buttons = gtk.gtk_box_new(gtk.horizontal, 0);
     gtk.gtk_widget_add_css_class(buttons, "linked");
-    for (&s.status_buttons, [_][*:0]const u8{ "All", "Edited", "Not edited" }, 0..) |*b, label, i| {
+    for (&s.status_buttons, [_][*:0]const u8{ "All", "Edited", "Not edited", "Picked" }, 0..) |*b, label, i| {
         b.* = gtk.gtk_toggle_button_new_with_label(label);
         gtk.gtk_widget_set_hexpand(b.*, 1);
         if (i > 0) gtk.gtk_toggle_button_set_group(b.*, s.status_buttons[0]);
-        gtk.gtk_box_append(buttons, b.*);
+        // On a row of its own: the sidebar is narrow.
+        if (i < 3) gtk.gtk_box_append(buttons, b.*);
     }
+    gtk.gtk_widget_set_tooltip_text(s.status_buttons[3], "The photos you or Claude picked; P picks the open one");
     gtk.gtk_toggle_button_set_active(s.status_buttons[0], 1);
     for (s.status_buttons) |b| connect(b, "toggled", &onStatus, s);
     gtk.gtk_box_append(filters, buttons);
+    gtk.gtk_box_append(filters, s.status_buttons[3]);
     const none = [_]?[*:0]const u8{ "All days", null };
     s.day_menu = gtk.gtk_drop_down_new_from_strings(&none);
     connect(s.day_menu, "notify::selected", &onDay, s);
@@ -161,7 +165,7 @@ pub fn create(s: *Sidebar) *anyopaque {
 fn onStatus(_: *anyopaque, ctx: ?*anyopaque) callconv(.c) void {
     const s: *Sidebar = @ptrCast(@alignCast(ctx));
     if (s.updating) return;
-    const list = [_]App.Status{ .all, .edited, .unedited };
+    const list = [_]App.Status{ .all, .edited, .unedited, .picked };
     for (s.status_buttons, list) |b, status| if (gtk.gtk_toggle_button_get_active(b) != 0) {
         if (s.app.status == status) return;
         s.app.status = status;
@@ -175,6 +179,22 @@ fn onDay(_: *anyopaque, _: *anyopaque, ctx: ?*anyopaque) callconv(.c) void {
     const i = gtk.gtk_drop_down_get_selected(s.day_menu);
     s.app.day = if (i >= 1 and i - 1 < s.days.items.len) s.days.items[i - 1] else "";
     s.refilter();
+}
+
+/// The picks changed: the marks and the count, and what the filter shows.
+pub fn picksChanged(s: *Sidebar) void {
+    s.showPickCount();
+    if (s.app.status == .picked) s.buildAndShow();
+    s.repaint();
+}
+
+fn showPickCount(s: *Sidebar) void {
+    var count: usize = 0;
+    if (s.app.folder) |*f| for (f.photos) |p| {
+        count += @intFromBool(p.picked);
+    };
+    var buf: [32]u8 = undefined;
+    gtk.gtk_button_set_label(s.status_buttons[3], if (count > 0) std.fmt.bufPrintZ(&buf, "Picked ({d})", .{count}) catch "Picked" else "Picked");
 }
 
 /// The open photo changed under a filter: the one left may drop out.
@@ -269,6 +289,7 @@ pub fn rebuild(s: *Sidebar) void {
     gtk.gtk_toggle_button_set_active(s.status_buttons[@intFromEnum(s.app.status)], 1);
     s.updating = false;
     s.fillDays();
+    s.showPickCount();
     var buf: [256]u8 = undefined;
     gtk.gtk_label_set_text(s.name_label, if (s.app.folder) |*f| std.fmt.bufPrintZ(&buf, "{s}", .{f.name()}) catch "" else "No folder");
     s.buildAndShow();
@@ -377,7 +398,13 @@ fn onSetup(_: *anyopaque, item: *anyopaque, ctx: ?*anyopaque) callconv(.c) void 
         gtk.gtk_widget_set_halign(dot, 2);
         gtk.gtk_widget_set_valign(dot, gtk.align_start);
         gtk.gtk_overlay_add_overlay(frame, dot);
-        cell.* = .{ .frame = frame, .picture = picture, .dot = dot, .sidebar = s };
+        const pick_mark = gtk.gtk_box_new(gtk.horizontal, 0);
+        gtk.gtk_widget_set_opacity(pick_mark, 0);
+        gtk.gtk_widget_add_css_class(pick_mark, "thumb-pick");
+        gtk.gtk_widget_set_halign(pick_mark, gtk.align_start);
+        gtk.gtk_widget_set_valign(pick_mark, gtk.align_start);
+        gtk.gtk_overlay_add_overlay(frame, pick_mark);
+        cell.* = .{ .frame = frame, .picture = picture, .dot = dot, .pick_mark = pick_mark, .sidebar = s };
         const click = gtk.gtk_gesture_click_new();
         connect(click, "released", &onClick, cell);
         gtk.gtk_widget_add_controller(frame, click);
@@ -458,6 +485,7 @@ fn paintCell(s: *Sidebar, cell: *Cell) void {
     const f = &(s.app.folder orelse return);
     // Opacity, not visibility: this runs while the list lays itself out.
     gtk.gtk_widget_set_opacity(cell.dot, if (f.photos[i].edited) 1 else 0);
+    gtk.gtk_widget_set_opacity(cell.pick_mark, if (f.photos[i].picked) 1 else 0);
     if (s.current == @as(usize, i)) gtk.gtk_widget_add_css_class(cell.frame, "current") else gtk.gtk_widget_remove_css_class(cell.frame, "current");
     if (s.selected.count() > 1 and s.selected.contains(i)) gtk.gtk_widget_add_css_class(cell.frame, "selected") else gtk.gtk_widget_remove_css_class(cell.frame, "selected");
 }
@@ -507,7 +535,7 @@ fn onClick(controller: *anyopaque, _: c_int, _: f64, _: f64, ctx: ?*anyopaque) c
     s.on_pick(i);
 }
 
-/// The photos picked for an export: the selected ones in order, or none.
+/// The photos selected for an export, in order, or none.
 pub fn selection(s: *const Sidebar, a: std.mem.Allocator) ![]const []const u8 {
     if (s.selected.count() < 2) return &.{};
     const f = &(s.app.folder orelse return &.{});

@@ -52,7 +52,7 @@ subject: ?*@import("subject.zig") = null,
 tab: []const u8 = "adjust",
 hooks: Hooks = .{},
 
-pub const Status = enum { all, edited, unedited };
+pub const Status = enum { all, edited, unedited, picked };
 
 /// How Claude's tools reach the window.
 pub const Hooks = struct {
@@ -64,6 +64,11 @@ pub const Hooks = struct {
     // The compiler's message, or null when it compiled.
     compile_shader: ?*const fn (a: std.mem.Allocator, params: []const Library.Param, source: []const u8) []const u8 = null,
     bake: ?*const fn (a: std.mem.Allocator, title: []const u8, size: u32) anyerror![]const u8 = null,
+    // A contact sheet of these photos answers the call, under the text.
+    sheet: ?*const fn (call: *Mcp.Call, indices: []const u32, lead: []const u8) anyerror!void = null,
+    // The photos Ctrl-clicked in the sidebar.
+    selected: ?*const fn (a: std.mem.Allocator) anyerror![]const u32 = null,
+    picks_changed: ?*const fn () void = null,
 };
 
 pub const Shot = struct {
@@ -97,6 +102,8 @@ pub fn closeFolder(app: *App) void {
 pub fn openFolder(app: *App, path: [:0]const u8) !void {
     var resolved: [std.c.PATH_MAX]u8 = undefined;
     const real = std.mem.span(std.c.realpath(path, &resolved) orelse return error.FileNotFound);
+    // First: the scan below reads which photos have a recipe, this one's perhaps among them.
+    app.flush();
     var dir = try Io.Dir.cwd().openDir(app.io, real, .{ .iterate = true });
     errdefer dir.close(app.io);
     var arena: std.heap.ArenaAllocator = .init(app.gpa);
@@ -104,9 +111,9 @@ pub fn openFolder(app: *App, path: [:0]const u8) !void {
     const a = arena.allocator();
     const photos = try folders.scan(app.io, a, app.gpa, dir);
     const owned = try a.dupeZ(u8, real);
-    app.flush();
     app.closeFolder();
     app.folder = .{ .arena = arena, .path = owned, .dir = dir, .photos = photos };
+    app.loadPicks();
     app.remember(owned);
     if (photos.len > 0) try app.open(0);
 }
@@ -219,8 +226,61 @@ pub fn flush(app: *App) void {
     core.store.save(app.io, app.gpa, f.dir, d.rel, r) catch |err| log.err("recipe for {s} not saved: {t}", .{ d.rel, err });
 }
 
+fn loadPicks(app: *App) void {
+    const f = &(app.folder orelse return);
+    var scratch: std.heap.ArenaAllocator = .init(app.gpa);
+    defer scratch.deinit();
+    const names = core.store.loadPicks(app.io, scratch.allocator(), f.dir) catch |err| {
+        log.warn("picks unreadable: {t}", .{err});
+        return;
+    };
+    // A photo that's gone since is just not picked any more.
+    for (names) |name| if (f.index(name)) |i| {
+        f.photos[i].picked = true;
+    };
+}
+
+fn savePicks(app: *App) !void {
+    const f = &(app.folder orelse return error.NoFolder);
+    var scratch: std.heap.ArenaAllocator = .init(app.gpa);
+    defer scratch.deinit();
+    const a = scratch.allocator();
+    var names: std.ArrayList([]const u8) = .empty;
+    for (f.photos) |p| if (p.picked) try names.append(a, p.rel);
+    try core.store.savePicks(app.io, a, f.dir, names.items);
+}
+
+/// The folder's picks, in its order.
+pub fn picks(app: *const App, a: std.mem.Allocator) ![]const u32 {
+    const f = &(app.folder orelse return error.NoFolder);
+    var out: std.ArrayList(u32) = .empty;
+    for (f.photos, 0..) |p, i| if (p.picked) try out.append(a, @intCast(i));
+    return out.items;
+}
+
+/// These photos are the picks now, and no others.
+pub fn setPicks(app: *App, indices: []const u32) !void {
+    const f = &(app.folder orelse return error.NoFolder);
+    for (f.photos) |*p| p.picked = false;
+    for (indices) |i| f.photos[i].picked = true;
+    try app.savePicks();
+}
+
+/// P: the open photo in or out of the picks.
+pub fn togglePick(app: *App) !void {
+    const f = &(app.folder orelse return error.NoFolder);
+    const i = app.current orelse return error.NoPhoto;
+    f.photos[i].picked = !f.photos[i].picked;
+    try app.savePicks();
+}
+
 pub fn matches(app: *const App, p: Photo) bool {
-    const status = app.status == .all or p.edited == (app.status == .edited);
+    const status = switch (app.status) {
+        .all => true,
+        .edited => p.edited,
+        .unedited => !p.edited,
+        .picked => p.picked,
+    };
     return status and (app.day.len == 0 or std.mem.eql(u8, p.day, app.day));
 }
 
@@ -302,6 +362,47 @@ test "an edit marks the photo, undoes and redoes, and is there after reopening" 
     try app.openFolder(path);
     try testing.expect(app.folder.?.photos[0].edited);
     try testing.expectEqual(0.8, (try app.recipe(a)).edits.exposure);
+}
+
+test "picks stay after reopening, and a filter shows only them" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var buf: [std.c.PATH_MAX]u8 = undefined;
+    var app, const path = try testApp(&tmp, &buf);
+    defer app.deinit();
+    try app.openFolder(path);
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try testing.expectEqual(0, (try app.picks(a)).len);
+    try app.setPicks(&.{ 2, 1 });
+    try testing.expectEqualSlices(u32, &.{ 1, 2 }, try app.picks(a));
+    // They replace those before; P adds and takes away the open one.
+    try app.setPicks(&.{2});
+    try app.togglePick();
+    try testing.expectEqualSlices(u32, &.{ 0, 2 }, try app.picks(a));
+    try app.togglePick();
+    try app.togglePick();
+    try app.openFolder(path);
+    try testing.expectEqualSlices(u32, &.{ 0, 2 }, try app.picks(a));
+    app.status = .picked;
+    try app.open(1);
+    var out: std.ArrayList(u32) = .empty;
+    defer out.deinit(testing.allocator);
+    try app.shown(testing.allocator, &out);
+    // The open photo always stays in.
+    try testing.expectEqualSlices(u32, &.{ 0, 1, 2 }, out.items);
+    try app.open(0);
+    try app.shown(testing.allocator, &out);
+    try testing.expectEqualSlices(u32, &.{ 0, 2 }, out.items);
+    // A photo that's gone is no trouble; none left, no file.
+    try tmp.dir.deleteFile(testing.io, "trip/c.jpeg");
+    try app.openFolder(path);
+    try testing.expectEqualSlices(u32, &.{0}, try app.picks(a));
+    try app.setPicks(&.{});
+    try testing.expectError(error.FileNotFound, tmp.dir.access(testing.io, ".photo-editor/picks.json", .{}));
+    // No edit came of any of it.
+    for (app.folder.?.photos) |p| try testing.expect(!p.edited);
 }
 
 test "the original files are never written to" {

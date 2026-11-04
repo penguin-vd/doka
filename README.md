@@ -26,13 +26,13 @@ claude mcp add --transport http photo http://127.0.0.1:7777/mcp
 
 Then ask in Claude Code, for example "make it more film-like". Claude's changes apply live and
 Ctrl+Z undoes them. It can also open other photos, export, and write shaders (`save_shader`) or bake
-its colour work into a new look (`bake_look`). If the app wasn't open, open it and run `/mcp`.
+its colour work into a new look (`bake_look`). It sees up to 30 photos at once on a numbered contact sheet: ask "choose five nice photos from this folder" and they're marked as picks, for the two of you to edit one by one. If the app wasn't open, open it and run `/mcp`.
 
 ## Where things are
 
 - Edits: `<folder>/.photo-editor/recipes/<photo>.json`, written as you edit. Delete one to reset
   the photo. Photos themselves are never written.
-- Thumbnails: `<folder>/.photo-editor/thumbs/`.
+- Thumbnails: `<folder>/.photo-editor/thumbs/`. Picks: `<folder>/.photo-editor/picks.json`.
 - Looks (`.cube` LUTs) and shaders: `~/.config/doka/looks/` and `~/.config/doka/shaders/<name>/`
   (`shader.glsl` and `shader.json`); edits there show up at once.
 - Exports: `~/Pictures/Doka/` unless you choose another folder; never over an earlier export.
@@ -50,7 +50,8 @@ its colour work into a new look (`bake_look`). If the app wasn't open, open it a
 | Escape | Stop clicking a subject, back to the whole photo |
 | Delete | Remove the picked mask |
 | Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y | Undo, redo |
-| Ctrl+E | Export |
+| P | Pick the open photo, or take it out of the picks |
+| Ctrl+E | Export (on the Picked filter: the picks) |
 | Ctrl+O | Open folder |
 | Ctrl/Shift-click a thumbnail | Pick several for export |
 | double-click a slider or its name, or the Curve title | Reset it |

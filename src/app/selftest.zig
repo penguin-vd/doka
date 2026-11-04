@@ -12,6 +12,7 @@ const App = @import("app.zig");
 const Canvas = @import("canvas.zig");
 const MasksPanel = @import("masks_panel.zig");
 const CurvePanel = @import("curve_panel.zig");
+const Sheet = @import("sheet.zig");
 const Slider = @import("slider.zig");
 const Library = @import("library.zig");
 const Looks = @import("looks.zig");
@@ -179,6 +180,7 @@ const tests = .{
     .{ "a shader that doesn't compile is tried once and says why, until it's fixed", brokenShader },
     .{ "the keys and a limit's drag do what they say on the layers", maskKeys },
     .{ "a press on the photo takes hold of the right thing, with the pointer to match", canvasPresses },
+    .{ "a contact sheet shows the photos with their edits and numbers; picks are kept and nothing else changes", contactSheet },
     .{ "the curve panel adds, moves and takes away points, and leaves a straight curve out of the recipe", curvePanel },
     .{ "an export through the pipeline keeps camera, lens, date and exposure, and the original is untouched", exportKeepsMetadata },
 };
@@ -1005,6 +1007,157 @@ fn onTestCrop(rect: cropping.Rect, _: u64) void {
 fn pointerIs(canvas: *const Canvas, name: ?[]const u8) bool {
     const now = canvas.cursor_name orelse return name == null;
     return name != null and std.mem.eql(u8, std.mem.span(now), name.?);
+}
+
+var sheet_under_test: *Sheet = undefined;
+var gl_is_es = true;
+var picked_photos: []const u32 = &.{};
+
+fn stubSheet(call: *Mcp.Call, indices: []const u32, lead: []const u8) anyerror!void {
+    return sheet_under_test.start(call, indices, lead);
+}
+
+fn stubSelected(_: std.mem.Allocator) anyerror![]const u32 {
+    return picked_photos;
+}
+
+fn stubPicksChanged() void {}
+
+fn alwaysCurrent() bool {
+    return true;
+}
+
+fn contactSheet(c: Ctx) !void {
+    const io = c.io;
+    const a = c.arena;
+    const folder = try std.fmt.allocPrintSentinel(a, "/tmp/doka-probe-sheet-{d}", .{std.c.getpid()}, 0);
+    try std.Io.Dir.cwd().createDirPath(io, folder);
+    defer std.Io.Dir.cwd().deleteTree(io, folder) catch {};
+    for ([_][]const u8{ "P4270251.JPG", "P5070015.jpg", "P7310341.JPG", "P8120024.JPG", "PB290321.JPG" }, 0..) |name, i| {
+        const source = std.Io.Dir.cwd().readFileAlloc(io, try std.fmt.allocPrint(a, "testdata/photos/{s}", .{name}), gpa, .limited(64 << 20)) catch return;
+        defer gpa.free(source);
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fmt.allocPrint(a, "{s}/p{d}.jpg", .{ folder, i }), .data = source });
+    }
+    var pool: Pool = .{ .io = io };
+    try pool.start();
+    defer pool.stop();
+    var app: App = .{ .gpa = gpa, .io = io };
+    defer app.closeFolder();
+    try app.openFolder(folder);
+    const config = try std.fmt.allocPrint(a, "{s}-config", .{folder});
+    defer std.Io.Dir.cwd().deleteTree(io, config) catch {};
+    var library = try Library.init(gpa, io, config);
+    gl_is_es = c.p.es;
+    var sheet: Sheet = .{ .gpa = gpa, .app = &app, .pool = &pool, .looks = .{ .gpa = gpa, .library = &library }, .gl_current = alwaysCurrent, .es = struct {
+        fn f() bool {
+            return gl_is_es;
+        }
+    }.f };
+    sheet_under_test = &sheet;
+    app.hooks = .{ .edited = stubEdited, .screenshot = stubScreenshot, .sheet = stubSheet, .selected = stubSelected, .picks_changed = stubPicksChanged };
+
+    const Answer = struct { text: []const u8, jpeg: []const u8 };
+    const ask = struct {
+        fn f(ctx: Ctx, app_: *App, name: []const u8, arguments: []const u8) !Answer {
+            const call = try gpa.create(Mcp.Call);
+            defer gpa.destroy(call);
+            call.* = .{ .gpa = gpa, .io = ctx.io, .name = name, .arguments = arguments, .server = undefined };
+            tools.run(app_, call);
+            var turns: usize = 0;
+            while (call.result == null and turns < 4000) : (turns += 1) _ = gtk.g_main_context_iteration(null, 0) + sleepMs(2);
+            const result = call.result orelse return error.Failed;
+            defer gpa.free(result);
+            const parsed = try std.json.parseFromSliceLeaky(std.json.Value, ctx.arena, result, .{ .allocate = .alloc_always });
+            const content = parsed.object.get("content").?.array.items;
+            var jpeg: []const u8 = "";
+            if (content.len > 1) {
+                const data = content[1].object.get("data").?.string;
+                const bytes = try ctx.arena.alloc(u8, try std.base64.standard.Decoder.calcSizeForSlice(data));
+                try std.base64.standard.Decoder.decode(bytes, data);
+                jpeg = bytes;
+            }
+            return .{ .text = content[0].object.get("text").?.string, .jpeg = jpeg };
+        }
+    }.f;
+    // What the sheet's picture has at a cell's middle, brightness 0..255.
+    const middle = struct {
+        fn f(ctx: Ctx, dir: []const u8, jpeg: []const u8, n: u32, slot: u32) !u8 {
+            const path = try std.fmt.allocPrintSentinel(ctx.arena, "{s}/.sheet.jpeg", .{dir}, 0);
+            try std.Io.Dir.cwd().writeFile(ctx.io, .{ .sub_path = path, .data = jpeg });
+            defer std.Io.Dir.cwd().deleteFile(ctx.io, path) catch {};
+            var lin = try core.decode.linear(gpa, path, 0);
+            defer lin.deinit(gpa);
+            const l = Sheet.layoutFor(n, .landscape);
+            try expect(lin.width == l.width and lin.height == l.height, "the sheet is {d}x{d}, not {d}x{d}", .{ lin.width, lin.height, l.width, l.height });
+            const x = (slot % l.cols) * (l.cell_w + 4) + l.cell_w / 2;
+            const y = (slot / l.cols) * (l.cell_h + 4) + l.cell_h / 2;
+            const v: f16 = @bitCast(lin.rgb[(y * lin.width + x) * 3 + 1]);
+            return @intFromFloat(@round(encode(@floatCast(v)) * 255));
+        }
+    }.f;
+
+    // A folder's first three, each numbered, and where to go on from.
+    var r = try ask(c, &app, "contact_sheet", "{\"count\":3}");
+    try expect(r.jpeg.len > 1000, "no picture: {s}", .{r.text});
+    try expect(std.mem.indexOf(u8, r.text, "Next: start 4") != null and std.mem.indexOf(u8, r.text, "\n2  p1.jpg") != null, "the text: {s}", .{r.text});
+    const plain = try middle(c, folder, r.jpeg, 3, 1);
+    const first_plain = try middle(c, folder, r.jpeg, 3, 0);
+
+    // An edit shows, on that photo only, and the sheet says who made it.
+    try expect(app.current == 0, "the first photo isn't open", .{});
+    try app.edit("{\"edits\":{\"exposure\":1.5}}", 0);
+    r = try ask(c, &app, "contact_sheet", "{\"count\":3}");
+    const brighter = try middle(c, folder, r.jpeg, 3, 0);
+    const second = try middle(c, folder, r.jpeg, 3, 1);
+    try expect(brighter > first_plain + 20 and @abs(@as(i32, second) - plain) <= 3, "the edit doesn't show: {d}, was {d}; beside it {d}, was {d}", .{ brighter, first_plain, second, plain });
+    try expect(std.mem.indexOf(u8, r.text, "edited by user") != null and std.mem.indexOf(u8, r.text, "sharp ") != null, "the text: {s}", .{r.text});
+    r = try ask(c, &app, "contact_sheet", "{\"only\":\"edited\"}");
+    try expect(std.mem.indexOf(u8, r.text, "1 photos") != null and std.mem.indexOf(u8, r.text, "end of the folder") != null, "only edited: {s}", .{r.text});
+
+    // Picks: kept, said on the sheet, usable by name, and no photo was edited for it.
+    r = try ask(c, &app, "contact_sheet", "{\"photos\":\"picked\"}");
+    try expect(std.mem.indexOf(u8, r.text, "no picks yet") != null, "no picks: {s}", .{r.text});
+    r = try ask(c, &app, "pick_photos", "{\"photos\":[2,\"p3.jpg\"]}");
+    try expect(std.mem.indexOf(u8, r.text, "2 photos") != null and std.mem.indexOf(u8, r.text, "\n4  p3.jpg") != null, "pick: {s}", .{r.text});
+    r = try ask(c, &app, "contact_sheet", "{\"photos\":\"picked\"}");
+    try expect(r.jpeg.len > 1000 and std.mem.indexOf(u8, r.text, "p1.jpg") != null and std.mem.indexOf(u8, r.text, "  picked") != null and std.mem.indexOf(u8, r.text, "p2.jpg") == null, "the picks: {s}", .{r.text});
+    r = try ask(c, &app, "contact_sheet", "{\"only\":\"picked\",\"count\":1}");
+    try expect(std.mem.indexOf(u8, r.text, "Next: start 4") != null, "walking the picks: {s}", .{r.text});
+    try expect(!app.folder.?.photos[1].edited and !app.folder.?.photos[3].edited, "picking edited a photo", .{});
+    r = try ask(c, &app, "pick_photos", "{\"photos\":[99]}");
+    try expect((try app.picks(a)).len == 2, "a bad pick changed the picks: {s}", .{r.text});
+    app.flush();
+    try app.openFolder(folder);
+    try expect((try app.picks(a)).len == 2, "the picks didn't survive reopening", .{});
+
+    // Portrait cells for mostly portrait photos: bigger than they'd be in landscape ones.
+    for (0..3) |i| {
+        try app.open(i);
+        try app.edit("{\"crop\":{\"rotate\":90}}", 0);
+    }
+    r = try ask(c, &app, "contact_sheet", "{\"count\":3}");
+    const portrait = Sheet.layoutFor(3, .portrait);
+    const dims = try sheetSize(c, folder, r.jpeg);
+    try expect(dims[0] == portrait.width and dims[1] == portrait.height, "portrait sheet {any}, not {d}x{d}", .{ dims, portrait.width, portrait.height });
+
+    // The user's selection still works too; and the numbers open a photo.
+    picked_photos = &.{};
+    r = try ask(c, &app, "contact_sheet", "{\"photos\":\"selected\"}");
+    try expect(std.mem.indexOf(u8, r.text, "hasn't selected") != null, "nothing selected: {s}", .{r.text});
+    picked_photos = &.{ 0, 3 };
+    r = try ask(c, &app, "contact_sheet", "{\"photos\":\"selected\"}");
+    try expect(std.mem.indexOf(u8, r.text, "\n4  p3.jpg") != null and r.jpeg.len > 1000, "the selection: {s}", .{r.text});
+    picked_photos = &.{};
+    app.flush();
+}
+
+fn sheetSize(c: Ctx, dir: []const u8, jpeg: []const u8) ![2]u32 {
+    const path = try std.fmt.allocPrintSentinel(c.arena, "{s}/.sheet.jpeg", .{dir}, 0);
+    try std.Io.Dir.cwd().writeFile(c.io, .{ .sub_path = path, .data = jpeg });
+    defer std.Io.Dir.cwd().deleteFile(c.io, path) catch {};
+    var lin = try core.decode.linear(gpa, path, 0);
+    defer lin.deinit(gpa);
+    return .{ @intCast(lin.width), @intCast(lin.height) };
 }
 
 fn tempPhoto(c: Ctx, app: *App, tag: []const u8) !?[:0]const u8 {

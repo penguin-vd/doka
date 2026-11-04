@@ -208,7 +208,7 @@ Undo history is kept in memory for the session and works for edits from either s
 
 The UI follows the design canvas (see `design/`): folder sidebar, photo in the middle, tool panel on the right. Where the design and this spec differ, this spec wins.
 
-- **Folder browser:** Open folder (native dialog), thumbnail grid separated by subfolder and by the day taken (from EXIF), a dot on edited photos, filters for edited / not edited and by day. Remember the last folder. ← → switches photos, among those the filters show.
+- **Folder browser:** Open folder (native dialog), thumbnail grid separated by subfolder and by the day taken (from EXIF), a dot on edited photos, filters for edited / not edited / picked and by day. Picks are a folder's chosen photos, by P or by Claude, kept in `.photo-editor/picks.json`. Remember the last folder. ← → switches photos, among those the filters show.
 - **Adjust:** Exposure, Contrast, Highlights, Shadows, Whites, Blacks, a tone curve, Temperature, Tint, Vibrance, Saturation, Sharpen, Noise reduction. Double-click a slider to reset it; the wheel over its track moves it. At the top, the layers: the whole photo and its masks. Pick a layer and the same sliders edit it; a mask adds its blur, its limits, its own colour mixer and handles on the photo. Sharpen, noise reduction and the curve are for the whole photo.
 - **Looks:** a grid of looks (LUT files), each previewed on the current photo, plus Strength, Grain (amount, size) and Halation sliders. A collapsed Colour section holds the per-colour mixer, and a Shaders list below lets you add, reorder and toggle shaders.
 - **Crop:** aspect ratios (Original, 1:1, 4:5, 3:2, 16:9), drag handles, Straighten, Rotate 90°, Flip.
@@ -230,8 +230,12 @@ Open the app, open Claude Code, and ask: "make it more film-like." Claude sees t
 | `set_edits` | Changes sliders, look, colour, grain, halation or crop live (only the fields given); returns the new view |
 | `open_photo` | Switches to another photo by name, or next / previous |
 | `list_photos` | Photos in the open folder, with an edited flag |
+| `contact_sheet` | Up to 30 photos in one picture with their edits, each marked with its position in the folder, and a line per photo with a sharpness number; walks the folder or takes a list |
+| `pick_photos` | Keeps a choice of photos as the folder's picks, which stay and show in the sidebar; nothing is edited |
 | `undo` | Undoes the last change |
 | `export` | Exports the current or named photos; metadata always kept |
+
+Everywhere a tool takes several photos it takes positions (the number on the sheet, the one `get_view` shows) or names; or "picked" for the folder's picks, or "selected" for what the user Ctrl-clicked. Photos are edited one at a time, on purpose: there is no bulk edit.
 
 Plus the look and shader tools listed under "Looks and shaders".
 
@@ -267,7 +271,7 @@ Budgets to test against, measured on a 24-megapixel JPEG.
 
 - RAW files: not needed, the photos are good JPEGs (LibRaw could add it later)
 - Brushes, healing, and layers beyond masks (masks are planned separately: `docs/masks-plan.md`)
-- Library features: ratings, tags, albums, search (the folder browser's filters are all there is)
+- Library features: ratings, tags, albums, search (the folder browser's filters and picks are all there is)
 - Cloud sync, accounts, sharing
 - Windows and macOS builds
 - Saved presets that apply a whole recipe in one click (v2)

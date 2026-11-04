@@ -61,7 +61,6 @@ The photos are also in Immich. Endpoints below are from Immich's OpenAPI spec (`
 
 ## Claude
 
-- **Edit several photos in one call** (S): set_edits with `photos: [...]`, for a series.
 - **An activity list** in the panel (S; the design had one): Claude's calls, newest last.
 - **More looks and shaders** written by Claude on request; bake_look already makes LUTs of them.
 
