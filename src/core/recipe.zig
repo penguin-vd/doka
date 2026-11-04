@@ -2,6 +2,7 @@
 //! Field names are the JSON's (SPEC.md, Recipe format); only values that differ from the default
 //! are written. Every field's default is "unchanged".
 const std = @import("std");
+const store = @import("store.zig");
 
 const Recipe = @This();
 
@@ -11,6 +12,7 @@ version: u32 = current_version,
 edits: Edits = .{},
 look: Look = .{},
 shaders: []const ShaderUse = &.{},
+masks: []const Mask = &.{},
 colour: Colour = .{},
 halation: f32 = 0,
 grain: Grain = .{},
@@ -71,6 +73,63 @@ pub const Detail = struct {
     noise: f32 = 0,
 };
 
+pub const max_masks = 8;
+pub const max_mask_points = 16;
+
+/// Part of the photo with edits of its own, like a layer. Coordinates are 0..1 of the photo as
+/// decoded (y down), not of the crop: a mask stays on its pixels through crop and rotation.
+pub const Mask = struct {
+    name: []const u8 = "",
+    enabled: bool = true,
+    shape: Shape = .whole,
+    // Linear: the full effect at `from`, fading to nothing at `to`.
+    from: [2]f32 = .{ 0.5, 0 },
+    to: [2]f32 = .{ 0.5, 0.5 },
+    // Radial: an ellipse, its radii as shares of the photo's width and height.
+    centre: [2]f32 = .{ 0.5, 0.5 },
+    radius: [2]f32 = .{ 0.25, 0.25 },
+    // How far in from the ellipse's edge it fades, % of the radius.
+    feather: f32 = 50,
+    // Subject: a picture in `.photo-editor/masks/`, and the points that found it, x, y and 1 for
+    // "this" or 0 for "not this".
+    file: []const u8 = "",
+    points: []const [3]f32 = &.{},
+    // Only pixels of this brightness and colour in the original photo.
+    brightness: Brightness = .{},
+    hue: HueRange = .{},
+    // Everything but what the shape and limits selected.
+    invert: bool = false,
+    edits: Edits = .{},
+    colour: Colour = .{},
+    // A lens-like blur, 0..100: up to 2.5% of the photo's long edge.
+    blur: f32 = 0,
+
+    pub const Shape = enum { whole, linear, radial, subject };
+
+    pub fn hasEdits(m: Mask) bool {
+        return m.blur > 0 or !eql(m.edits, Edits{}) or !eql(m.colour, Colour{});
+    }
+
+    /// Where a mask is, without what it does: what dragging its handles changes.
+    pub const Place = struct { from: [2]f32, to: [2]f32, centre: [2]f32, radius: [2]f32 };
+
+    pub fn place(m: Mask) Place {
+        return .{ .from = m.from, .to = m.to, .centre = m.centre, .radius = m.radius };
+    }
+};
+
+pub const Brightness = struct {
+    min: f32 = 0,
+    max: f32 = 100,
+};
+
+/// OKLCH degrees, the colour mixer's: reds 25, oranges 60, yellows 100, greens 145, blues 250,
+/// purples 315. `width` is degrees to each side; 0 is any colour.
+pub const HueRange = struct {
+    centre: f32 = 0,
+    width: f32 = 0,
+};
+
 pub const aspects = [_][]const u8{ "original", "free", "1:1", "4:5", "3:2", "16:9" };
 
 pub const Crop = struct {
@@ -85,6 +144,8 @@ pub const Crop = struct {
 pub const max_exposure = 5;
 pub const max_straighten = 45;
 const min_crop = 0.02;
+// A gradient or ellipse may start or sit partly off the photo.
+const mask_reach = [2]f32{ -1, 2 };
 
 /// A recipe from its JSON, out-of-range values clamped. Strings live in `arena`.
 pub fn parse(arena: std.mem.Allocator, json: []const u8) !Recipe {
@@ -174,6 +235,11 @@ fn writeValue(s: *std.json.Stringify, value: anytype) !void {
             for (value) |item| try writeValue(s, item);
             try s.endArray();
         },
+        .array => {
+            try s.beginArray();
+            for (value) |item| try writeValue(s, item);
+            try s.endArray();
+        },
         // f32's shortest form: 0.3, not 0.30000001192092896.
         .float => try s.print("{d}", .{value}),
         else => try s.write(value),
@@ -201,16 +267,50 @@ fn clampField(v: *f32, lo: f32, hi: f32) void {
     v.* = if (std.math.isNan(v.*)) 0 else std.math.clamp(v.*, lo, hi);
 }
 
+fn clampEdits(e: *Edits) void {
+    clampField(&e.exposure, -max_exposure, max_exposure);
+    inline for (.{ "temperature", "tint", "contrast", "highlights", "shadows", "saturation" }) |name| clampField(&@field(e, name), -100, 100);
+}
+
+fn clampColour(c: *Colour) void {
+    inline for (@typeInfo(Colour).@"struct".fields) |f| {
+        const band = &@field(c, f.name);
+        inline for (.{ "hue", "sat", "light" }) |name| clampField(&@field(band, name), -100, 100);
+    }
+}
+
+fn clampMask(m: *Mask) void {
+    for ([_]*[2]f32{ &m.from, &m.to, &m.centre }) |point| for (point) |*v| clampField(v, mask_reach[0], mask_reach[1]);
+    for (&m.radius) |*v| {
+        v.* = if (std.math.isNan(v.*)) 0.25 else std.math.clamp(v.*, 0.01, 2);
+    }
+    clampField(&m.feather, 0, 100);
+    clampField(&m.blur, 0, 100);
+    clampField(&m.brightness.min, 0, 100);
+    if (std.math.isNan(m.brightness.max)) m.brightness.max = 100;
+    m.brightness.max = std.math.clamp(m.brightness.max, 0, 100);
+    if (m.brightness.min > m.brightness.max) std.mem.swap(f32, &m.brightness.min, &m.brightness.max);
+    clampField(&m.hue.centre, 0, 360);
+    clampField(&m.hue.width, 0, 180);
+    if (!store.validMaskName(m.file)) m.file = "";
+    if (m.points.len > max_mask_points) m.points = m.points[0..max_mask_points];
+    for (@constCast(m.points)) |*point| {
+        clampField(&point[0], 0, 1);
+        clampField(&point[1], 0, 1);
+        point[2] = if (point[2] > 0.5) 1 else 0;
+    }
+    clampEdits(&m.edits);
+    clampColour(&m.colour);
+}
+
 pub fn clamp(r: *Recipe) void {
-    clampField(&r.edits.exposure, -max_exposure, max_exposure);
-    inline for (.{ "temperature", "tint", "contrast", "highlights", "shadows", "saturation" }) |name| clampField(&@field(r.edits, name), -100, 100);
+    clampEdits(&r.edits);
     clampField(&r.look.strength, 0, 100);
     if (r.look.name.len == 0) r.look.name = no_look;
     for (@constCast(r.shaders)) |*sh| clampField(&sh.strength, 0, 100);
-    inline for (@typeInfo(Colour).@"struct".fields) |f| {
-        const band = &@field(r.colour, f.name);
-        inline for (.{ "hue", "sat", "light" }) |name| clampField(&@field(band, name), -100, 100);
-    }
+    if (r.masks.len > max_masks) r.masks = r.masks[0..max_masks];
+    for (@constCast(r.masks)) |*m| clampMask(m);
+    clampColour(&r.colour);
     inline for (.{ &r.halation, &r.grain.amount, &r.grain.size, &r.detail.sharpen, &r.detail.noise, &r.vignette }) |v| clampField(v, 0, 100);
 
     const known = for (aspects) |a| {

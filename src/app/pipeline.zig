@@ -4,6 +4,7 @@
 //!   photo (linear, half float)
 //!   → detail      noise reduction, sharpening        (only when set)
 //!   → develop     the Adjust sliders, colour mixer, the look's LUT
+//!   → masks       each mask's own sliders and mixer, where it selects
 //!   → shaders     each enabled shader, in order
 //!   → halation    bright parts, blurred              (only when set)
 //!   → finish      crop/straighten/rotate/flip, halation, vignette, grain, colour space, dither
@@ -18,11 +19,14 @@ const Pipeline = @This();
 const common = @embedFile("glsl/common.glsl");
 const vertex_source = @embedFile("glsl/vertex.glsl");
 const effect_source = @embedFile("glsl/effect.glsl");
+const adjust_source = @embedFile("glsl/adjust.glsl");
 
 const band_count = 6;
 // Halation's blur: sigma as a share of the photo's long edge.
 const glow_sigma = 0.011;
 const blur_taps_per_sigma = 5;
+// A mask's blur at 100: its radius as a share of the long edge.
+const mask_blur_reach = 0.025;
 
 pub const Target = struct {
     texture: c_uint,
@@ -77,12 +81,15 @@ pub const Output = struct {
     view: [4]f32 = .{ 0, 0, 1, 1 },
     // Only this rectangle is drawn: before/after.
     scissor: ?[4]c_int = null,
+    // This mask drawn in red over the photo, to see where it is. Never in an export.
+    show_mask: ?usize = null,
 };
 
 gpa: std.mem.Allocator,
 es: bool,
 detail: c_uint = 0,
 develop: c_uint = 0,
+mask: c_uint = 0,
 bright: c_uint = 0,
 blur: c_uint = 0,
 finish: c_uint = 0,
@@ -101,10 +108,17 @@ c: ?Target = null,
 glow_a: ?Target = null,
 glow_b: ?Target = null,
 shaders: std.StringHashMapUnmanaged(Compiled) = .empty,
+// Subjects' saved masks on the GPU, by file name.
+stored: std.StringHashMapUnmanaged(c_uint) = .empty,
 // The result of everything before the last pass, and a hash of the recipe that made it: moving
 // and zooming change only the last pass.
 developed: ?*Target = null,
 developed_key: u64 = 0,
+
+/// The open folder: where subjects' saved masks are read from.
+pub var masks_root: []const u8 = "";
+// Each is a few MB on the GPU; they load again in a moment when one's needed.
+const max_stored = 16;
 
 /// The compiler's message after `error.ShaderCompile` or `error.ShaderLink`.
 pub var last_error: []const u8 = "";
@@ -173,7 +187,8 @@ fn linearClamped(kind: c_uint) void {
 pub fn init(gpa: std.mem.Allocator, es: bool) !Pipeline {
     var p: Pipeline = .{ .gpa = gpa, .es = es };
     p.detail = try program(es, &.{@embedFile("glsl/detail.glsl")});
-    p.develop = try program(es, &.{@embedFile("glsl/develop.glsl")});
+    p.develop = try program(es, &.{ adjust_source, @embedFile("glsl/develop.glsl") });
+    p.mask = try program(es, &.{ adjust_source, @embedFile("glsl/mask.glsl") });
     p.bright = try program(es, &.{@embedFile("glsl/bright.glsl")});
     p.blur = try program(es, &.{@embedFile("glsl/blur.glsl")});
     p.finish = try program(es, &.{@embedFile("glsl/finish.glsl")});
@@ -357,27 +372,100 @@ fn runDevelop(p: *Pipeline, from: c_uint, to: *const Target, r: Recipe) void {
     drawPass();
 }
 
+// The uniforms of adjust.glsl.
+fn setAdjustValues(prog: c_uint, e: Recipe.Edits, colour: Recipe.Colour) void {
+    gl.glUniform1f(at(prog, "u_exposure"), e.exposure);
+    gl.glUniform1f(at(prog, "u_temperature"), e.temperature / 100);
+    gl.glUniform1f(at(prog, "u_tint"), e.tint / 100);
+    gl.glUniform1f(at(prog, "u_contrast"), e.contrast / 100);
+    gl.glUniform1f(at(prog, "u_highlights"), e.highlights / 100);
+    gl.glUniform1f(at(prog, "u_shadows"), e.shadows / 100);
+    gl.glUniform1f(at(prog, "u_saturation"), e.saturation / 100);
+    var bands: [band_count * 3]f32 = undefined;
+    inline for (.{ "reds", "oranges", "yellows", "greens", "blues", "purples" }, 0..) |name, i| {
+        const b = @field(colour, name);
+        bands[i * 3] = b.hue / 100;
+        bands[i * 3 + 1] = b.sat / 100;
+        bands[i * 3 + 2] = b.light / 100;
+    }
+    gl.glUniform3fv(at(prog, "u_bands"), band_count, &bands);
+}
+
+// A subject's mask, read from its file the first time. Null when there's none (yet, or any more).
+fn storedMask(p: *Pipeline, name: []const u8) ?c_uint {
+    if (name.len == 0) return null;
+    if (p.stored.get(name)) |t| return t;
+    const picture = core.store.loadMask(p.gpa, masks_root, name) catch return null;
+    defer p.gpa.free(picture.pixels);
+    if (p.stored.count() >= max_stored) p.dropStored();
+    const key = p.gpa.dupe(u8, name) catch return null;
+    p.stored.put(p.gpa, key, 0) catch {
+        p.gpa.free(key);
+        return null;
+    };
+    var t: c_uint = 0;
+    gl.glGenTextures(1, &t);
+    gl.glBindTexture(gl.TEXTURE_2D, t);
+    gl.glPixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.glTexImage2D(gl.TEXTURE_2D, 0, gl.R8, @intCast(picture.width), @intCast(picture.height), 0, gl.RED, gl.UNSIGNED_BYTE, picture.pixels.ptr);
+    linearClamped(gl.TEXTURE_2D);
+    p.stored.getPtr(key).?.* = t;
+    return t;
+}
+
+fn dropStored(p: *Pipeline) void {
+    var it = p.stored.iterator();
+    while (it.next()) |e| {
+        gl.glDeleteTextures(1, e.value_ptr);
+        p.gpa.free(e.key_ptr.*);
+    }
+    p.stored.clearRetainingCapacity();
+}
+
+fn runMask(p: *Pipeline, m: Recipe.Mask, show: bool, from: c_uint, to: *const Target) void {
+    // Loading binds a texture of its own: before the pass's.
+    const stored = if (m.shape == .subject) p.storedMask(m.file) else null;
+    const blur = if (m.enabled) m.blur / 100 * mask_blur_reach else 0;
+    if (blur > 0) {
+        gl.glBindTexture(gl.TEXTURE_2D, from);
+        gl.glGenerateMipmap(gl.TEXTURE_2D);
+        gl.glTexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    }
+    defer if (blur > 0) {
+        gl.glBindTexture(gl.TEXTURE_2D, from);
+        gl.glTexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    };
+    const prog = p.mask;
+    begin(prog, to.fbo, 0, 0, to.width, to.height, false);
+    texture(prog, "u_image", 0, from);
+    texture(prog, "u_photo", 1, p.src);
+    if (m.enabled) setAdjustValues(prog, m.edits, m.colour) else setAdjustValues(prog, .{}, .{});
+    texture(prog, "u_stored", 2, stored orelse p.flat);
+    gl.glUniform1i(at(prog, "u_shape"), if (m.shape == .subject and stored == null) 4 else @intFromEnum(m.shape));
+    gl.glUniform2f(at(prog, "u_from"), m.from[0], m.from[1]);
+    gl.glUniform2f(at(prog, "u_to"), m.to[0], m.to[1]);
+    gl.glUniform2f(at(prog, "u_centre"), m.centre[0], m.centre[1]);
+    gl.glUniform2f(at(prog, "u_radius"), m.radius[0], m.radius[1]);
+    gl.glUniform1f(at(prog, "u_feather"), m.feather / 100);
+    gl.glUniform1i(at(prog, "u_invert"), @intFromBool(m.invert));
+    gl.glUniform2f(at(prog, "u_brightness"), m.brightness.min / 100, m.brightness.max / 100);
+    gl.glUniform1f(at(prog, "u_hue"), m.hue.centre);
+    gl.glUniform1f(at(prog, "u_hue_width"), m.hue.width);
+    gl.glUniform2f(at(prog, "u_size"), @floatFromInt(p.width), @floatFromInt(p.height));
+    gl.glUniform1i(at(prog, "u_show"), @intFromBool(show));
+    gl.glUniform1f(at(prog, "u_blur"), blur);
+    // 64 taps over the disc are about 8 across: each covers that share of its width.
+    const across = blur * 2 * @as(f32, @floatFromInt(@max(p.width, p.height))) / 8;
+    gl.glUniform1f(at(prog, "u_blur_lod"), std.math.log2(@max(1, across)));
+    drawPass();
+}
+
 fn setDevelopValues(p: *Pipeline, r: Recipe) void {
     const d = p.develop;
     gl.glActiveTexture(gl.TEXTURE0 + 7);
     gl.glBindTexture(gl.TEXTURE_3D, p.lut);
     gl.glUniform1i(at(d, "u_lut"), 7);
-    const e = r.edits;
-    gl.glUniform1f(at(d, "u_exposure"), e.exposure);
-    gl.glUniform1f(at(d, "u_temperature"), e.temperature / 100);
-    gl.glUniform1f(at(d, "u_tint"), e.tint / 100);
-    gl.glUniform1f(at(d, "u_contrast"), e.contrast / 100);
-    gl.glUniform1f(at(d, "u_highlights"), e.highlights / 100);
-    gl.glUniform1f(at(d, "u_shadows"), e.shadows / 100);
-    gl.glUniform1f(at(d, "u_saturation"), e.saturation / 100);
-    var bands: [band_count * 3]f32 = undefined;
-    inline for (.{ "reds", "oranges", "yellows", "greens", "blues", "purples" }, 0..) |name, i| {
-        const b = @field(r.colour, name);
-        bands[i * 3] = b.hue / 100;
-        bands[i * 3 + 1] = b.sat / 100;
-        bands[i * 3 + 2] = b.light / 100;
-    }
-    gl.glUniform3fv(at(d, "u_bands"), band_count, &bands);
+    setAdjustValues(d, r.edits, r.colour);
     const has_look = !std.mem.eql(u8, r.look.name, Recipe.no_look) and r.look.strength > 0 and p.lut_size > 2;
     gl.glUniform1f(at(d, "u_lut_size"), @floatFromInt(p.lut_size));
     gl.glUniform3f(at(d, "u_lut_min"), p.lut_min[0], p.lut_min[1], p.lut_min[2]);
@@ -423,8 +511,11 @@ pub fn render(p: *Pipeline, r: Recipe, out: Output) void {
     gl.glDisable(gl.SCISSOR_TEST);
     gl.glBindVertexArray(p.vao);
     const halation = r.halation / 100;
-    const key = developKey(r);
-    const developed: *Target = if (p.developed != null and key != 0 and key == p.developed_key) p.developed.? else p.runChain(r, key, halation);
+    var key = developKey(r);
+    if (key != 0) if (out.show_mask) |i| {
+        key = (key +% (i + 1) *% 0x9E3779B97F4A7C15) | 1;
+    };
+    const developed: *Target = if (p.developed != null and key != 0 and key == p.developed_key) p.developed.? else p.runChain(r, key, halation, out.show_mask);
     gl.glBindTexture(gl.TEXTURE_2D, developed.texture);
     // A preview smaller than the photo samples a mipmap, not every few pixels.
     gl.glTexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
@@ -462,7 +553,7 @@ pub fn render(p: *Pipeline, r: Recipe, out: Output) void {
 }
 
 // Everything before the last pass.
-fn runChain(p: *Pipeline, r: Recipe, key: u64, halation: f32) *Target {
+fn runChain(p: *Pipeline, r: Recipe, key: u64, halation: f32, show_mask: ?usize) *Target {
     var cur = p.src;
     const texel = [2]f32{ 1.0 / @as(f32, @floatFromInt(p.width)), 1.0 / @as(f32, @floatFromInt(p.height)) };
     if (r.detail.noise > 0 or r.detail.sharpen > 0) {
@@ -477,6 +568,13 @@ fn runChain(p: *Pipeline, r: Recipe, key: u64, halation: f32) *Target {
     }
     p.runDevelop(cur, &p.b.?, r);
     var current: *Target = &p.b.?;
+    for (r.masks, 0..) |m, i| {
+        const show = show_mask == i;
+        if (!show and (!m.enabled or !m.hasEdits())) continue;
+        const next: *Target = if (current == &p.b.?) &p.c.? else &p.b.?;
+        p.runMask(m, show, current.texture, next);
+        current = next;
+    }
     for (r.shaders) |use| {
         const s = p.shaders.get(use.name) orelse continue;
         if (!use.enabled or use.strength <= 0) continue;

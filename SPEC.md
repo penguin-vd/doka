@@ -38,7 +38,7 @@ All processing is GLSL shaders on the GPU, used for both the live preview and th
 
 1. **Decode (libvips):** the camera JPEG is converted to linear float using its embedded ICC profile and uploaded as a float texture.
 2. **Base shader:** exposure in true stops, white balance, a filmic tone curve with soft highlight roll-off, and the per-colour mixer (do the mixer in OKLCH so hue shifts look natural).
-3. **Look and shaders:** the selected LUT, then any shaders, in order (see Looks and shaders below).
+3. **Look, masks and shaders:** the selected LUT, then each mask's own adjustments where it selects, then any shaders, in order (see Looks and shaders, and Masks, below).
 4. **Effect passes:** halation (bright areas blurred and tinted red-orange), grain (luminance-dependent, scaled to resolution) and vignette. Built in; each has its own slider.
 5. **Output:** convert to sRGB or Display P3 and dither. For export, the float pixels go back to Zig; libvips resizes, sharpens, encodes, embeds the ICC profile and copies the metadata untouched.
 
@@ -63,7 +63,7 @@ There are two separate layers that stack: one **look** (a LUT) for the colour ba
 | Per photo | One at a time | Any number, in order |
 | Can do | Colour and tone only | Anything: colour, split toning, light leaks, blur, bloom, custom grain |
 
-Order in the pipeline: base adjustments → look → shaders → built-in grain, halation and vignette → output.
+Order in the pipeline: base adjustments → look → masks → shaders → built-in grain, halation and vignette → output.
 
 ```glsl
 // shader.glsl: split toning, cool shadows and warm highlights
@@ -85,6 +85,7 @@ vec3 effect(vec3 c) {
 | `get_shader` | A shader's source and parameters |
 | `save_shader` | Creates or updates a shader; the app compiles it and returns compile errors, or applies it and returns a screenshot |
 | `delete_shader` | Removes a shader |
+| `mask_subject` | Finds a person or object from points on it and adds it as a mask with the given edits, or changes an existing one; answers with the mask painted red |
 | `bake_look` | Turns the current colour settings (adjustments + look + colour-only shaders) into a new `.cube` (33³ or 65³), so a look Claude built works as a plain LUT anywhere |
 
 Example: "make it look like Portra 400" → Claude picks a close LUT if there is one, adds a shader for the extra character, checks the screenshot, and can bake the result into a new LUT. A shader that fails to compile never replaces a working one, the last five versions are kept, and files edited by hand reload live.
@@ -150,6 +151,16 @@ Recipes live in a hidden `.photo-editor/` folder at the root of the folder you o
   "shaders": [
     { "name": "split-tone", "strength": 60, "params": { "shadows": 0.5, "highlights": 0.7 } }
   ],
+  "masks": [
+    {
+      "name": "Sky",
+      "shape": "linear",
+      "from": [0.5, 0.1],
+      "to": [0.5, 0.4],
+      "hue": { "centre": 250, "width": 45 },
+      "edits": { "exposure": -0.5, "saturation": 15 }
+    }
+  ],
   "colour": {
     "greens": { "hue": 8, "sat": -15, "light": 0 },
     "blues": { "hue": 0, "sat": -10, "light": -5 }
@@ -170,6 +181,14 @@ Recipes live in a hidden `.photo-editor/` folder at the root of the folder you o
 | `look.name` | A `.cube` file in the looks folder | `none` = no look |
 | `look.strength` | 0 to 100 | Blends the LUT in |
 | `shaders` | List of { name, strength, params } | Applied in order, after the look |
+| `masks` | Up to 8, applied in order, after the look | Each: `name`, `enabled`, `shape`, its selection, `invert`, its own `edits` and `colour` |
+| `masks[].shape` | `whole`, `linear`, `radial`, `subject` | Coordinates are 0 to 1 of the photo as decoded, y down, so a mask stays on its pixels through crop and rotation |
+| `masks[].from`, `.to` | x, y | Linear: full effect at `from`, nothing at `to` |
+| `masks[].centre`, `.radius`, `.feather` | x, y; shares of width and height; 0 to 100 | Radial: an ellipse, fading inwards from its edge |
+| `masks[].file`, `.points` | A picture in `.photo-editor/masks/`; x, y, and 1 "this" or 0 "not this" | Subject: found from those points (optional download, `scripts/subject-model.py`) |
+| `masks[].blur` | 0 to 100 | A lens-like blur, up to 2.5% of the long edge; what's outside the mask doesn't bleed in |
+| `masks[].brightness` | `min`, `max`: 0 to 100 | Reads the original photo, so other edits don't move it |
+| `masks[].hue` | `centre` 0 to 360, `width` 0 to 180 | OKLCH degrees, reads the original photo; width 0 is any colour |
 | `colour.<band>` | hue, sat, light: −100 to 100 | Bands: reds, oranges, yellows, greens, blues, purples |
 | `halation` | 0 to 100 | Glow around highlights |
 | `grain.amount`, `grain.size` | 0 to 100 | Size is relative to image resolution |
@@ -185,7 +204,7 @@ Undo history is kept in memory for the session and works for edits from either s
 The UI follows the design canvas (see `design/`): folder sidebar, photo in the middle, tool panel on the right. Where the design and this spec differ, this spec wins.
 
 - **Folder browser:** Open folder (native dialog), thumbnail grid separated by subfolder and by the day taken (from EXIF), a dot on edited photos, filters for edited / not edited and by day. Remember the last folder. ← → switches photos, among those the filters show.
-- **Adjust:** Exposure, Contrast, Highlights, Shadows, Temperature, Tint, Saturation, Sharpen, Noise reduction. Double-click a slider to reset it.
+- **Adjust:** Exposure, Contrast, Highlights, Shadows, Temperature, Tint, Saturation, Sharpen, Noise reduction. Double-click a slider to reset it. At the top, the layers: the whole photo and its masks. Pick a layer and the same sliders edit it; a mask adds its blur, its limits, its own colour mixer and handles on the photo. Sharpen and noise reduction are for the whole photo.
 - **Looks:** a grid of looks (LUT files), each previewed on the current photo, plus Strength, Grain (amount, size) and Halation sliders. A collapsed Colour section holds the per-colour mixer, and a Shaders list below lets you add, reorder and toggle shaders.
 - **Crop:** aspect ratios (Original, 1:1, 4:5, 3:2, 16:9), drag handles, Straighten, Rotate 90°, Flip.
 - **Before / after:** hold `\` or click the toggle to see the original.
@@ -242,7 +261,7 @@ Budgets to test against, measured on a 24-megapixel JPEG.
 ## Out of scope for v1
 
 - RAW files: not needed, the photos are good JPEGs (LibRaw could add it later)
-- Layers, masks, brushes, healing or local adjustments
+- Brushes, healing, and layers beyond masks (masks are planned separately: `docs/masks-plan.md`)
 - Library features: ratings, tags, albums, search (the folder browser's filters are all there is)
 - Cloud sync, accounts, sharing
 - Windows and macOS builds

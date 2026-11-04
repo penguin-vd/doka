@@ -25,6 +25,10 @@ pub const instructions =
     \\  keep the camera, lens and date metadata; leave GPS as it is unless asked.
     \\- Looks are .cube LUTs (list_looks); shaders are small GLSL effects (list_shaders, save_shader).
     \\  Use a look for the colour base, a shader for character on top.
+    \\- To change part of the photo ("darken the sky", "lift the subject"), use masks in set_edits. Look at
+    \\  the screenshot, place the mask, then call get_view with show_mask to check where it landed.
+    \\- For a person or object, mask_subject follows its outline: give points on it, and points on what it
+    \\  wrongly took, and look at the red in the screenshot it returns. Gradients don't need the download.
     \\- Afterwards, tell the user briefly what you changed.
 ;
 
@@ -32,10 +36,10 @@ pub const instructions =
 pub const definitions =
     \\[
     \\{"name":"get_view","title":"See the open photo",
-    \\ "description":"What the user sees now: the folder, the open photo (name, camera, lens, exposure), the active tab, the photo's current edits (only values that differ from the default), a screenshot of the rendered photo, and its tones measured at full screenshot size: % of clipped highlights (any channel at 255, and per channel), % of crushed shadows, mean brightness and a 16-bin histogram.",
-    \\ "inputSchema":{"type":"object","properties":{}}},
+    \\ "description":"What the user sees now: the folder, the open photo (name, camera, lens, exposure), the active tab, the photo's current edits (only values that differ from the default), a screenshot of the rendered photo, and its tones measured at full screenshot size: % of clipped highlights (any channel at 255, and per channel), % of crushed shadows, mean brightness and a 16-bin histogram. Give show_mask (a mask's position in the recipe's masks, from 0) to see that mask painted red in the screenshot, to check where it is; nothing in the photo changes.",
+    \\ "inputSchema":{"type":"object","properties":{"show_mask":{"type":"integer","minimum":0}}}},
     \\{"name":"set_edits","title":"Edit the open photo",
-    \\ "description":"Changes the open photo's edits, live. Give only the fields to change; everything else stays. Set a field to its default (0, or look name 'none') to remove it. Give `photo` (the name get_view shows) and nothing changes if another photo is open by now. Returns the new view with a screenshot. Ranges: exposure -5..5 (stops); temperature, tint, contrast, highlights, shadows, saturation -100..100; look.strength, halation, vignette, grain.amount, grain.size, detail.sharpen, detail.noise 0..100; colour bands (reds, oranges, yellows, greens, blues, purples) hue/sat/light -100..100; crop.rect [x,y,w,h] 0..1 of the rotated photo, crop.rotate 0/90/180/270 (clockwise), crop.straighten -45..45 degrees (+ turns the photo clockwise, - counter-clockwise), crop.aspect original|free|1:1|4:5|3:2|16:9 (literal: 4:5 is portrait). Give crop.aspect and/or crop.focus [x,y] (0..1, the point to keep in the middle) without a rect and the app fits the biggest crop of that aspect around it. shaders replaces the whole list: [{name, strength 0..100, enabled, params:{name:value}}].",
+    \\ "description":"Changes the open photo's edits, live. Give only the fields to change; everything else stays. Set a field to its default (0, or look name 'none') to remove it. Give `photo` (the name get_view shows) and nothing changes if another photo is open by now. Returns the new view with a screenshot. Ranges: exposure -5..5 (stops); temperature, tint, contrast, highlights, shadows, saturation -100..100; look.strength, halation, vignette, grain.amount, grain.size, detail.sharpen, detail.noise 0..100; colour bands (reds, oranges, yellows, greens, blues, purples) hue/sat/light -100..100; crop.rect [x,y,w,h] 0..1 of the rotated photo, crop.rotate 0/90/180/270 (clockwise), crop.straighten -45..45 degrees (+ turns the photo clockwise, - counter-clockwise), crop.aspect original|free|1:1|4:5|3:2|16:9 (literal: 4:5 is portrait). Give crop.aspect and/or crop.focus [x,y] (0..1, the point to keep in the middle) without a rect and the app fits the biggest crop of that aspect around it. shaders replaces the whole list: [{name, strength 0..100, enabled, params:{name:value}}]. masks also replaces the whole list, up to 8: part of the photo with edits of its own, applied after the look, in order; [] removes them. Each mask: name (shown to the user, like 'Sky'), enabled, shape whole|linear|radial, invert (everything but what's selected), edits and colour as above, blur 0..100 (a lens-like blur, up to 2.5% of the long edge; what's outside the mask doesn't bleed in), and what selects: linear: from [x,y] (full effect) and to [x,y] (fades to nothing there); radial: centre [x,y], radius [rx,ry] as shares of the photo's width and height, feather 0..100 (% of the radius it fades over, inwards from the edge); any shape: brightness {min,max} 0..100 (0 black, 100 white) and hue {centre, width} in degrees (reds 25, oranges 60, yellows 100, greens 145, blues 250, purples 315; width to each side, 0 = any colour; greys never match a hue). Limits read the original photo, so other edits don't move them. Mask coordinates are 0..1 of the whole photo as decoded, upright, (0,0) top-left: NOT of the crop or rotated view, so with a crop or rotation in the recipe convert from what the screenshot shows.",
     \\ "inputSchema":{"type":"object","properties":{
     \\  "edits":{"type":"object","properties":{"exposure":{"type":"number","minimum":-5,"maximum":5},"temperature":{"type":"number","minimum":-100,"maximum":100},"tint":{"type":"number","minimum":-100,"maximum":100},"contrast":{"type":"number","minimum":-100,"maximum":100},"highlights":{"type":"number","minimum":-100,"maximum":100},"shadows":{"type":"number","minimum":-100,"maximum":100},"saturation":{"type":"number","minimum":-100,"maximum":100}}},
     \\  "look":{"type":"object","properties":{"name":{"type":"string","description":"A .cube file from list_looks, or 'none'"},"strength":{"type":"number","minimum":0,"maximum":100}}},
@@ -45,8 +49,12 @@ pub const definitions =
     \\  "vignette":{"type":"number","minimum":0,"maximum":100},
     \\  "grain":{"type":"object","properties":{"amount":{"type":"number","minimum":0,"maximum":100},"size":{"type":"number","minimum":0,"maximum":100}}},
     \\  "detail":{"type":"object","properties":{"sharpen":{"type":"number","minimum":0,"maximum":100},"noise":{"type":"number","minimum":0,"maximum":100}}},
+    \\  "masks":{"type":"array","maxItems":8,"items":{"type":"object","properties":{"name":{"type":"string"},"enabled":{"type":"boolean"},"shape":{"type":"string","enum":["whole","linear","radial"]},"from":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2},"to":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2},"centre":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2},"radius":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2},"feather":{"type":"number","minimum":0,"maximum":100},"brightness":{"type":"object","properties":{"min":{"type":"number","minimum":0,"maximum":100},"max":{"type":"number","minimum":0,"maximum":100}}},"hue":{"type":"object","properties":{"centre":{"type":"number","minimum":0,"maximum":360},"width":{"type":"number","minimum":0,"maximum":180}}},"invert":{"type":"boolean"},"blur":{"type":"number","minimum":0,"maximum":100},"edits":{"type":"object"},"colour":{"type":"object"}}}},
     \\  "crop":{"type":"object","properties":{"aspect":{"type":"string"},"focus":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2},"straighten":{"type":"number"},"rotate":{"type":"number"},"flip":{"type":"boolean"},"rect":{"type":"array","items":{"type":"number"},"minItems":4,"maxItems":4}}},
     \\  "photo":{"type":"string","description":"The photo you mean to edit; refused if another one is open"}}}},
+    \\{"name":"mask_subject","title":"Mask a person or object",
+    \\ "description":"Finds a person or object from points on it, follows its outline, and adds it as a mask with these edits (or changes the mask at position `mask`). Takes a second or two the first time on a photo, far less after. Returns the view with that mask painted red: check it, and call again with `mask` and more points if it took too much or too little. Points are [x,y], 0..1 of the whole photo as decoded, upright, (0,0) top-left: NOT of the crop or rotated view. Everything else as a mask in set_edits. Needs scripts/subject-model.py to have been run once.",
+    \\ "inputSchema":{"type":"object","properties":{"points":{"type":"array","description":"Points on the subject","items":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2}},"exclude":{"type":"array","description":"Points on what doesn't belong","items":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2}},"mask":{"type":"integer","minimum":0,"description":"Change this mask, from 0, instead of adding one"},"name":{"type":"string","description":"Shown to the user, like 'Portrait'"},"invert":{"type":"boolean"},"blur":{"type":"number","minimum":0,"maximum":100},"brightness":{"type":"object"},"hue":{"type":"object"},"edits":{"type":"object"},"colour":{"type":"object"},"photo":{"type":"string","description":"The photo you mean to edit; refused if another one is open"}},"required":["points"]}},
     \\{"name":"open_photo","title":"Open another photo",
     \\ "description":"Opens a photo of the folder by name (its path in the folder, or just the file name), or the next or previous one. Returns the new view.",
     \\ "inputSchema":{"type":"object","properties":{"name":{"type":"string"},"direction":{"type":"string","enum":["next","previous"]}}}},
@@ -75,7 +83,7 @@ pub const definitions =
     \\ "description":"Removes a shader from the shaders folder.",
     \\ "inputSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}},
     \\{"name":"bake_look","title":"Bake the colour into a look",
-    \\ "description":"Turns the open photo's colour settings (adjustments, look and colour-only shaders; not crop, grain, halation or vignette) into a new .cube LUT in the looks folder, usable anywhere.",
+    \\ "description":"Turns the open photo's colour settings (adjustments, look and colour-only shaders; not masks, crop, grain, halation or vignette) into a new .cube LUT in the looks folder, usable anywhere.",
     \\ "inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"File name; .cube is added"},"size":{"type":"number","enum":[33,65]}},"required":["name"]}}
     \\]
 ;
@@ -108,6 +116,13 @@ fn explain(err: anyerror) []const u8 {
         error.BadName => "names are letters, digits, spaces, - and _",
         error.BadParamName => "a parameter name must be a GLSL name (letters, digits, _)",
         error.NoSuchShader, error.FileNotFound => "no such shader (see list_shaders)",
+        error.ModelMissing => "this needs its download once: the user runs scripts/subject-model.py and restarts Doka",
+        error.TooManyMasks => "a photo holds at most 8 masks",
+        error.TooManyPoints => "a mask takes at most 16 points",
+        error.NotASubject => "the mask at that position isn't a subject mask",
+        error.NoSuchMask => "the recipe has no mask at that position; they count from 0",
+        error.InvalidEnumTag => "a mask's shape is whole, linear or radial",
+        error.LengthMismatch => "a mask's points are [x, y]",
         error.ExportBusy => "an export is already running",
         error.BadArguments => "missing or wrong arguments (see the tool's description)",
         error.FolderNotAbsolute => "the export folder must be an absolute path",
@@ -117,7 +132,17 @@ fn explain(err: anyerror) []const u8 {
 
 fn dispatch(app: *App, a: std.mem.Allocator, call: *Mcp.Call, args: std.json.Value) !void {
     const name = call.name;
-    if (eql(name, "get_view")) return view(app, a, call, null);
+    if (eql(name, "get_view")) {
+        const show: ?usize = if (args == .object) if (args.object.get("show_mask")) |v| switch (v) {
+            .integer => |i| if (i >= 0) @intCast(i) else return error.BadArguments,
+            else => return error.BadArguments,
+        } else null else null;
+        if (show) |i| {
+            const s = app.currentSession() orelse return error.NoPhoto;
+            if (i >= (try s.recipe(a)).masks.len) return error.NoSuchMask;
+        }
+        return viewShowing(app, a, call, null, show);
+    }
     if (eql(name, "list_photos")) return listPhotos(app, a, call, if (args == .object) if (args.object.get("edited_only")) |v| v == .bool and v.bool else false else false);
     if (eql(name, "set_edits")) {
         const s = (app.currentSession() orelse return error.NoPhoto);
@@ -137,6 +162,7 @@ fn dispatch(app: *App, a: std.mem.Allocator, call: *Mcp.Call, args: std.json.Val
         app.hooks.edited.?();
         return view(app, a, call, null);
     }
+    if (eql(name, "mask_subject")) return maskSubject(app, a, call, args);
     if (eql(name, "open_photo")) {
         const f = &(app.folder orelse return error.NoFolder);
         const i = if (string(args, "name")) |n| try find(f, n) else if (string(args, "direction")) |d| blk: {
@@ -172,6 +198,121 @@ fn dispatch(app: *App, a: std.mem.Allocator, call: *Mcp.Call, args: std.json.Val
     }
     if (eql(name, "bake_look")) return bakeLook(app, a, call, args);
     return error.UnknownTool;
+}
+
+const SubjectCall = struct {
+    app: *App,
+    call: *Mcp.Call,
+    // The mask's own fields as JSON, and its place in the list, or null for a new one.
+    fields: []u8,
+    index: ?usize,
+};
+
+fn appendPoints(a: std.mem.Allocator, list: *std.ArrayList([3]f32), v: ?std.json.Value, label: f32) !void {
+    const value = v orelse return;
+    if (value != .array) return error.BadArguments;
+    for (value.array.items) |item| {
+        if (item != .array or item.array.items.len != 2) return error.BadArguments;
+        var point: [3]f32 = .{ 0, 0, label };
+        for (item.array.items, 0..) |n, i| point[i] = switch (n) {
+            .integer => |x| @floatFromInt(x),
+            .float => |x| @floatCast(x),
+            else => return error.BadArguments,
+        };
+        try list.append(a, point);
+    }
+}
+
+fn maskSubject(app: *App, a: std.mem.Allocator, call: *Mcp.Call, args: std.json.Value) !void {
+    const s = app.currentSession() orelse return error.NoPhoto;
+    if (args != .object) return error.BadArguments;
+    if (!try samePhoto(app, a, call, args)) return;
+    const subject = app.subject orelse return error.ModelMissing;
+    if (!subject.available()) return error.ModelMissing;
+    const r = try s.recipe(a);
+    const index: ?usize = if (args.object.get("mask")) |v| switch (v) {
+        .integer => |i| if (i >= 0) @intCast(i) else return error.BadArguments,
+        else => return error.BadArguments,
+    } else null;
+    if (index) |i| {
+        if (i >= r.masks.len) return error.NoSuchMask;
+        if (r.masks[i].shape != .subject) return error.NotASubject;
+    } else if (r.masks.len >= Recipe.max_masks) return error.TooManyMasks;
+    var fields = try args.object.clone(a);
+    var points: std.ArrayList([3]f32) = .empty;
+    // A mask being changed keeps the points that found it.
+    if (index) |i| try points.appendSlice(a, r.masks[i].points);
+    try appendPoints(a, &points, fields.get("points"), 1);
+    try appendPoints(a, &points, fields.get("exclude"), 0);
+    if (points.items.len == 0) return error.BadArguments;
+    if (points.items.len > Recipe.max_mask_points) return error.TooManyPoints;
+    for ([_][]const u8{ "points", "exclude", "mask", "photo" }) |key| _ = fields.orderedRemove(key);
+    try validate(Recipe.Mask, .{ .object = fields });
+    const f = &(app.folder orelse return error.NoFolder);
+    const rel = app.currentRel() orelse return error.NoPhoto;
+    const pending = try app.gpa.create(SubjectCall);
+    errdefer app.gpa.destroy(pending);
+    pending.* = .{ .app = app, .call = call, .index = index, .fields = try std.json.Stringify.valueAlloc(app.gpa, std.json.Value{ .object = fields }, .{}) };
+    errdefer app.gpa.free(pending.fields);
+    try subject.ask(.{ .path = try std.fmt.allocPrint(a, "{s}/{s}", .{ f.path, rel }), .root = f.path, .rel = rel, .points = points.items, .ctx = pending, .done = subjectFound });
+}
+
+fn subjectFound(ctx: *anyopaque, _: u64, rel: []const u8, points: []const [3]f32, file: ?[]const u8, failure: ?anyerror) void {
+    const pending: *SubjectCall = @ptrCast(@alignCast(ctx));
+    const app = pending.app;
+    const call = pending.call;
+    defer {
+        app.gpa.free(pending.fields);
+        app.gpa.destroy(pending);
+    }
+    var arena: std.heap.ArenaAllocator = .init(app.gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    applySubject(app, a, pending, rel, points, file, failure) catch |err| {
+        const msg = std.fmt.allocPrint(a, "mask_subject failed: {s}", .{explain(err)}) catch "mask_subject failed";
+        call.finish(Mcp.textResult(app.gpa, msg, true) catch return);
+    };
+}
+
+fn applySubject(app: *App, a: std.mem.Allocator, pending: *const SubjectCall, rel: []const u8, points: []const [3]f32, file: ?[]const u8, failure: ?anyerror) !void {
+    const name = file orelse return failure.?;
+    const open = app.currentRel() orelse return error.NoPhoto;
+    if (!eql(open, rel)) {
+        const text = try std.fmt.allocPrint(a, "Nothing changed: the open photo is {s} now, not {s}.", .{ open, rel });
+        return pending.call.finish(try Mcp.textResult(app.gpa, text, true));
+    }
+    const s = app.currentSession() orelse return error.NoPhoto;
+    const r = try s.recipe(a);
+    var mask = try std.json.parseFromSliceLeaky(Recipe.Mask, a, pending.fields, .{ .allocate = .alloc_always });
+    mask.shape = .subject;
+    mask.file = name;
+    mask.points = points;
+    var list: std.ArrayList(Recipe.Mask) = .empty;
+    try list.appendSlice(a, r.masks);
+    const at = if (pending.index) |i| blk: {
+        if (i >= list.items.len or list.items[i].shape != .subject) return error.NoSuchMask;
+        // Fields it wasn't given stay as they were.
+        const old = list.items[i];
+        const given = try std.json.parseFromSliceLeaky(std.json.Value, a, pending.fields, .{});
+        inline for (@typeInfo(Recipe.Mask).@"struct".fields) |field| {
+            if (given.object.get(field.name) == null and !eql(field.name, "shape") and !eql(field.name, "file") and !eql(field.name, "points")) {
+                @field(mask, field.name) = @field(old, field.name);
+            }
+        }
+        list.items[i] = mask;
+        break :blk i;
+    } else blk: {
+        if (mask.name.len == 0) mask.name = "Subject";
+        if (list.items.len >= Recipe.max_masks) return error.TooManyMasks;
+        try list.append(a, mask);
+        break :blk list.items.len - 1;
+    };
+    const json = try std.json.Stringify.valueAlloc(a, .{ .masks = list.items }, .{});
+    const patch = try std.json.parseFromSliceLeaky(std.json.Value, a, json, .{});
+    _ = try s.change(a, .{ .patch = patch, .by = .claude, .now = app.now() });
+    app.changed();
+    app.hooks.edited.?();
+    return viewShowing(app, a, pending.call, "The mask is painted red in this screenshot.", at);
 }
 
 fn eql(x: []const u8, y: []const u8) bool {
@@ -302,6 +443,10 @@ fn listPhotos(app: *App, a: std.mem.Allocator, call: *Mcp.Call, edited_only: boo
 
 /// The view as text, then a screenshot of it (`finishScreenshot`).
 pub fn view(app: *App, a: std.mem.Allocator, call: *Mcp.Call, lead: ?[]const u8) !void {
+    return viewShowing(app, a, call, lead, null);
+}
+
+fn viewShowing(app: *App, a: std.mem.Allocator, call: *Mcp.Call, lead: ?[]const u8, show_mask: ?usize) !void {
     var out: Io.Writer.Allocating = .init(a);
     if (lead) |l| try out.writer.print("{s}\n", .{l});
     try writeView(app, a, &out.writer);
@@ -310,7 +455,7 @@ pub fn view(app: *App, a: std.mem.Allocator, call: *Mcp.Call, lead: ?[]const u8)
         defer app.gpa.free(text);
         return call.finish(try Mcp.textResult(app.gpa, text, false));
     }
-    app.hooks.screenshot.?(.{ .call = call, .text = text });
+    app.hooks.screenshot.?(.{ .call = call, .text = text, .show_mask = show_mask });
 }
 
 fn writeView(app: *App, a: std.mem.Allocator, w: *Io.Writer) !void {

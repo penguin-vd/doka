@@ -47,6 +47,7 @@ dirty: ?struct { session: *Session, rel: []const u8 } = null,
 status: Status = .all,
 day: []const u8 = "",
 library: ?*Library = null,
+subject: ?*@import("subject.zig") = null,
 // The active tab, for get_view.
 tab: []const u8 = "adjust",
 hooks: Hooks = .{},
@@ -65,7 +66,12 @@ pub const Hooks = struct {
     bake: ?*const fn (a: std.mem.Allocator, title: []const u8, size: u32) anyerror![]const u8 = null,
 };
 
-pub const Shot = struct { call: *Mcp.Call, text: []u8 };
+pub const Shot = struct {
+    call: *Mcp.Call,
+    text: []u8,
+    // This mask painted red in the screenshot.
+    show_mask: ?usize = null,
+};
 
 pub fn deinit(app: *App) void {
     app.flush();

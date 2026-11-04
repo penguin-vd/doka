@@ -64,8 +64,33 @@ Changed for what someone would notice, a line under Decided for a choice whose r
   everything it had: filters and day groups, Adjust, Looks, Crop, Compare, export, and all of Claude's
   tools. The WebKit window, the page in `ui/` and the Node build step are gone.
 
+- Masks: part of the photo with edits of its own, as layers at the top of Adjust. Pick a layer and
+  the same sliders edit it, with its own colour mixer. Gradients, circles and brightness or colour
+  ranges, up to eight, with handles on the photo and a red "show mask" view. Claude places them with
+  `set_edits` and checks them with `get_view`'s `show_mask`. Preview, screenshots and export all
+  have them; the look thumbnails too. The Adjust tab scrolls when a mask's controls need the room.
+
+- Masks can blur: a Blur slider per mask, like a lens, so a background goes soft behind a person
+  without taking their colour.
+- Click a subject: "+ Subject" in Adjust, click a person or thing and the mask follows its outline,
+  down to hair; more clicks add to it, Shift-clicks take away. Claude does the same with
+  `mask_subject`. Optional: `scripts/subject-model.py` downloads ONNX Runtime and MobileSAM once
+  (56 MB, 74 MB unpacked); without it everything else works and the button says what to run.
+
 ### Decided
 
+- Subject masks are saved as small PNGs in `.photo-editor/masks/`, named from what made them, so they
+  look the same every time and open instantly. Undo needs the old ones, so removing a mask keeps its
+  file. MobileSAM over bigger models: 1.2 s the first click on a photo and 0.2 s after, on the CPU,
+  with no GPU runtime to install. The model's image part is unloaded after each photo, to keep idle
+  memory low. The coarse mask is refined against the photo with a guided filter.
+- Masks' brightness and colour limits read the original photo, not the edited one: changing a look
+  or the exposure doesn't move what a mask selects. They read a tiny average of nearby pixels,
+  because single pixels' noise speckled the mask's edge.
+- A mask's edits run after the look, in `src/app/glsl/adjust.glsl`, the same code as the whole
+  photo's sliders. Sharpening and noise reduction stay whole-photo: per mask they'd need the pipeline
+  rebuilt and would slow every slider drag.
+- After gradients, click-a-subject comes before depth: portraits are a big part of what this is for.
 - C APIs (libvips, webview, WebKitGTK, GLib) are declared by hand in Zig, only what we call:
   Zig 0.16's translate-c can't read GLib's headers (`_Pragma` in macros, `g_string_free`).
 - The page is served from memory at `app://ui/` (a WebKit URI scheme), not `set_html`: photos and

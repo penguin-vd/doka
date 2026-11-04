@@ -21,11 +21,12 @@ zig build -Doptimize=ReleaseSafe   # the build to actually use: a plain `zig bui
                        # never open a visible window: the owner tests the window on their own screen
 scripts/setup.sh       # once per clone: git's pre-commit (format, changelog, test, probe)
 scripts/starter-looks.py   # twelve film looks into ~/.config/doka/looks (downloads 420 MB once)
+scripts/subject-model.py   # click-a-subject's ONNX Runtime and model into ~/.config/doka/models (56 MB once)
 ```
 
 Layout: `src/main.zig` is the window; `src/app/` the rest of the editor (`app.zig` the state with no window,
 `pipeline.zig` image passes over `glsl/`, `canvas.zig` the photo, `sidebar.zig`, `slider.zig`, `looks_panel.zig`,
-`export_dialog.zig`, `exporter.zig`, `tools.zig` and `mcp.zig` Claude's side, `gtk.zig` and `gl.zig` the C APIs by hand).
+`masks_panel.zig`, `subject.zig` (click a subject), `export_dialog.zig`, `exporter.zig`, `tools.zig` and `mcp.zig` Claude's side, `gtk.zig` and `gl.zig` the C APIs by hand).
 `src/core/` is `photo-core` (libvips, no window: `decode`, `encode` + `exif`, `Recipe`,
 `store`; its tests need `testdata/photos/` and skip without it).
 C APIs are declared by hand in Zig (`src/app/gtk.zig`, `src/app/gl.zig`, the `c` struct in `src/core/vips.zig`), only

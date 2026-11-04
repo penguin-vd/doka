@@ -7,6 +7,14 @@ const gtk = @import("gtk.zig");
 const Pipeline = @import("pipeline.zig");
 const Cube = @import("cube.zig");
 const Exporter = @import("exporter.zig");
+const cropping = @import("crop.zig");
+const App = @import("app.zig");
+const Canvas = @import("canvas.zig");
+const MasksPanel = @import("masks_panel.zig");
+const Subject = @import("subject.zig");
+const Pool = @import("jobs.zig");
+const Mcp = @import("mcp.zig");
+const tools = @import("tools.zig");
 const Recipe = core.Recipe;
 
 const gpa = std.heap.c_allocator;
@@ -141,6 +149,24 @@ const tests = .{
     .{ "a shader runs, and a broken one is refused with its error", shaderRuns },
     .{ "a baked look reproduces the colour settings", baked },
     .{ "the starter shaders compile and run", starters },
+    .{ "a mask with no edits changes nothing, and its pass adds no error of its own", maskNothing },
+    .{ "a whole-photo mask does what the same slider does, one implementation", maskSameMaths },
+    .{ "a gradient changes one side and not the other, along its direction", maskGradient },
+    .{ "an ellipse changes what's inside it, its radii along width and height", maskRadial },
+    .{ "a brightness limit selects by brightness", maskBrightness },
+    .{ "a colour limit selects by hue, and leaves greys", maskHue },
+    .{ "invert selects everything else", maskInvert },
+    .{ "limits read the original photo: other edits don't move them", maskLimitsOriginal },
+    .{ "masks add up, and a switched-off one does nothing", maskStack },
+    .{ "a mask stays on its pixels, where the handles say, through crop, turn, flip and straighten", maskStays },
+    .{ "a mask's blur softens what's inside it, leaves the rest, and is the same size at any render size", maskBlur },
+    .{ "a blurred background doesn't take colour from the person in front of it", maskBlurNoBleed },
+    .{ "showing a mask paints it red, and only when asked", maskShown },
+    .{ "an exported photo with masks matches the preview", maskExport },
+    .{ "a saved subject mask selects its pixels, through crop, export and a fresh start; a missing one selects nothing", maskStored },
+    .{ "clicking a person in a real photo finds them and not the whole photo", subjectFinds },
+    .{ "clicking on the photo and Claude's mask_subject both make a saved mask, off the main loop", subjectEndToEnd },
+    .{ "the layers panel adds, edits, moves, follows undo and removes masks", maskPanel },
     .{ "an export through the pipeline keeps camera, lens, date and exposure, and the original is untouched", exportKeepsMetadata },
 };
 
@@ -306,6 +332,482 @@ fn baked(c: Ctx) !void {
     // Pure red's lattice point, made grey.
     const i = 8 * 3;
     try expect(@abs(lattice[i] - lattice[i + 1]) < 0.01, "red became {any}", .{lattice[i..][0..3]});
+}
+
+fn level(r: Picture, x: usize, y: usize) i32 {
+    return r.px[(y * r.w + x) * 4];
+}
+
+fn near(a: i32, b: i32, by: u32) bool {
+    return @abs(a - b) <= by;
+}
+
+fn maskNothing(c: Ctx) !void {
+    const plain = try c.run(256, 1, try ramp(c.arena), "{}", null);
+    const empty = try c.run(256, 1, try ramp(c.arena), "{\"masks\":[{\"shape\":\"linear\"},{\"shape\":\"radial\"}]}", null);
+    try expect(std.mem.eql(u8, plain.px, empty.px), "an empty mask changed the photo", .{});
+    // An edit too small to see runs the whole pass: to linear, the sliders, and back.
+    const pass = try c.run(256, 1, try ramp(c.arena), "{\"masks\":[{\"edits\":{\"exposure\":0.00001}}]}", null);
+    var worst: u32 = 0;
+    for (plain.px, pass.px) |a, b| worst = @max(worst, @abs(@as(i32, a) - b));
+    try expect(worst <= 1, "the pass moved a value by {d} levels", .{worst});
+}
+
+fn maskSameMaths(c: Ctx) !void {
+    const image = try ramp(c.arena);
+    const edits = "\"edits\":{\"exposure\":0.7,\"contrast\":20,\"shadows\":15,\"temperature\":-10,\"saturation\":30}";
+    const global = try c.run(256, 1, image, "{" ++ edits ++ "}", null);
+    const masked = try c.run(256, 1, image, "{\"masks\":[{" ++ edits ++ "}]}", null);
+    var worst: u32 = 0;
+    for (global.px, masked.px) |a, b| worst = @max(worst, @abs(@as(i32, a) - b));
+    try expect(worst <= 2, "off by {d} levels", .{worst});
+}
+
+fn maskGradient(c: Ctx) !void {
+    const n = 21;
+    const img = try c.arena.alloc(f32, n * n * 3);
+    @memset(img, 0.1);
+    const base = try c.run(n, n, img, "{}", null);
+    const down = try c.run(n, n, img, "{\"masks\":[{\"shape\":\"linear\",\"from\":[0.5,0],\"to\":[0.5,0.5],\"edits\":{\"exposure\":1}}]}", null);
+    const b = level(base, 10, 20);
+    try expect(level(down, 10, 0) > b + 30, "the top didn't change: {d} from {d}", .{ level(down, 10, 0), b });
+    try expect(level(down, 10, 5) > b and level(down, 10, 5) < level(down, 10, 0), "no fade: {d}", .{level(down, 10, 5)});
+    try expect(near(level(down, 10, 15), b, 1) and near(level(down, 10, 20), b, 1), "the bottom changed: {d}", .{level(down, 10, 20)});
+    try expect(near(level(down, 0, 0), level(down, 20, 0), 1), "a top-down gradient varies across", .{});
+    const across = try c.run(n, n, img, "{\"masks\":[{\"shape\":\"linear\",\"from\":[1,0.5],\"to\":[0.5,0.5],\"edits\":{\"exposure\":1}}]}", null);
+    try expect(level(across, 20, 10) > b + 30 and near(level(across, 2, 10), b, 1), "right {d}, left {d}", .{ level(across, 20, 10), level(across, 2, 10) });
+}
+
+fn maskRadial(c: Ctx) !void {
+    const n = 41;
+    const img = try c.arena.alloc(f32, n * n * 3);
+    @memset(img, 0.1);
+    const base = level(try c.run(n, n, img, "{}", null), 0, 0);
+    const r = try c.run(n, n, img, "{\"masks\":[{\"shape\":\"radial\",\"centre\":[0.5,0.5],\"radius\":[0.4,0.1],\"feather\":10,\"edits\":{\"exposure\":1}}]}", null);
+    try expect(level(r, 20, 20) > base + 30, "the middle didn't change", .{});
+    try expect(level(r, 30, 20) > base + 30, "inside the wide radius didn't change", .{});
+    try expect(near(level(r, 20, 30), base, 1), "outside the short radius changed: {d}", .{level(r, 20, 30)});
+    try expect(near(level(r, 0, 0), base, 1), "the corner changed", .{});
+}
+
+fn maskBrightness(c: Ctx) !void {
+    const image = try grey(c.arena, &.{ 0.01, 0.7 });
+    const base = try c.run(2, 1, image, "{}", null);
+    const bright = try c.run(2, 1, image, "{\"masks\":[{\"brightness\":{\"min\":50},\"edits\":{\"exposure\":-1}}]}", null);
+    try expect(near(level(bright, 0, 0), level(base, 0, 0), 1) and level(bright, 1, 0) < level(base, 1, 0) - 30, "got {d}, {d}", .{ level(bright, 0, 0), level(bright, 1, 0) });
+    const dark = try c.run(2, 1, image, "{\"masks\":[{\"brightness\":{\"max\":50},\"edits\":{\"exposure\":1}}]}", null);
+    try expect(level(dark, 0, 0) > level(base, 0, 0) + 10 and near(level(dark, 1, 0), level(base, 1, 0), 1), "got {d}, {d}", .{ level(dark, 0, 0), level(dark, 1, 0) });
+}
+
+// Blue, red, grey.
+const three = [9]f32{ 0.05, 0.1, 0.5, 0.5, 0.05, 0.03, 0.2, 0.2, 0.2 };
+
+fn maskHue(c: Ctx) !void {
+    const base = try c.run(3, 1, &three, "{}", null);
+    const r = try c.run(3, 1, &three, "{\"masks\":[{\"hue\":{\"centre\":250,\"width\":45},\"edits\":{\"exposure\":-1}}]}", null);
+    const blue = r.px[2];
+    try expect(blue < base.px[2] - 30, "blue stayed: {d} from {d}", .{ blue, base.px[2] });
+    try expect(near(level(r, 1, 0), level(base, 1, 0), 1), "red changed", .{});
+    try expect(near(level(r, 2, 0), level(base, 2, 0), 1), "grey changed", .{});
+}
+
+fn maskInvert(c: Ctx) !void {
+    const base = try c.run(3, 1, &three, "{}", null);
+    const r = try c.run(3, 1, &three, "{\"masks\":[{\"hue\":{\"centre\":250,\"width\":45},\"invert\":true,\"edits\":{\"exposure\":-1}}]}", null);
+    try expect(near(r.px[2], base.px[2], 1), "blue changed: {d} from {d}", .{ r.px[2], base.px[2] });
+    try expect(level(r, 1, 0) < level(base, 1, 0) - 30, "red stayed", .{});
+    try expect(level(r, 2, 0) < level(base, 2, 0) - 20, "grey stayed", .{});
+}
+
+fn maskLimitsOriginal(c: Ctx) !void {
+    // 0.1 is under the limit in the photo, over it after two stops of exposure.
+    const image = try grey(c.arena, &.{0.1});
+    const pushed = level(try c.run(1, 1, image, "{\"edits\":{\"exposure\":2}}", null), 0, 0);
+    try expect(pushed > 150, "the test's premise: {d}", .{pushed});
+    const masked = level(try c.run(1, 1, image, "{\"edits\":{\"exposure\":2},\"masks\":[{\"brightness\":{\"min\":60},\"edits\":{\"exposure\":-2}}]}", null), 0, 0);
+    try expect(near(masked, pushed, 1), "the limit followed the edit: {d} from {d}", .{ masked, pushed });
+}
+
+fn maskStack(c: Ctx) !void {
+    const image = try grey(c.arena, &.{0.03});
+    const once = "{\"edits\":{\"exposure\":2}}";
+    const want = level(try c.run(1, 1, image, once, null), 0, 0);
+    const both = level(try c.run(1, 1, image, "{\"masks\":[{\"edits\":{\"exposure\":1}},{\"edits\":{\"exposure\":1}}]}", null), 0, 0);
+    try expect(near(both, want, 2), "got {d}, want {d}", .{ both, want });
+    const base = level(try c.run(1, 1, image, "{}", null), 0, 0);
+    const off = level(try c.run(1, 1, image, "{\"masks\":[{\"enabled\":false,\"edits\":{\"exposure\":3}}]}", null), 0, 0);
+    try expect(near(off, base, 1), "a switched-off mask changed it: {d}", .{off});
+}
+
+fn maskStays(c: Ctx) !void {
+    const w = 120;
+    const h = 80;
+    const img = try c.arena.alloc(f32, w * h * 3);
+    @memset(img, 0.05);
+    const point = [2]f64{ 0.3, 0.6 };
+    const cases = [_]struct { json: []const u8, geometry: cropping.Geometry }{
+        .{ .json = "", .geometry = .{ .size = .{ w, h } } },
+        .{ .json = "\"crop\":{\"rotate\":90},", .geometry = .{ .turns = 1, .size = .{ h, w } } },
+        .{ .json = "\"crop\":{\"rotate\":270,\"flip\":true},", .geometry = .{ .turns = 3, .flip = true, .size = .{ h, w } } },
+        .{ .json = "\"crop\":{\"rect\":[0.1,0.2,0.6,0.7]},", .geometry = .{ .rect = .{ 0.1, 0.2, 0.6, 0.7 }, .size = .{ w, h } } },
+        .{ .json = "\"crop\":{\"straighten\":12},", .geometry = .{ .angle = std.math.degreesToRadians(@as(f64, 12)), .size = .{ w, h } } },
+    };
+    for (cases) |case| {
+        const json = try std.fmt.allocPrint(c.arena, "{{{s}\"masks\":[{{\"shape\":\"radial\",\"centre\":[{d},{d}],\"radius\":[0.05,0.075],\"edits\":{{\"exposure\":3}}}}]}}", .{ case.json, point[0], point[1] });
+        const r = try c.run(w, h, img, json, null);
+        // The middle of the bright spot.
+        var sx: f64 = 0;
+        var sy: f64 = 0;
+        var count: f64 = 0;
+        for (0..r.h) |y| for (0..r.w) |x| {
+            if (level(r, x, y) > 120) {
+                sx += @floatFromInt(x);
+                sy += @floatFromInt(y);
+                count += 1;
+            }
+        };
+        try expect(count > 0, "no spot with {s}", .{case.json});
+        const at = case.geometry.fromPhoto(point);
+        const wx = at[0] * @as(f64, @floatFromInt(r.w)) - 0.5;
+        const wy = at[1] * @as(f64, @floatFromInt(r.h)) - 0.5;
+        try expect(@abs(sx / count - wx) < 1.5 and @abs(sy / count - wy) < 1.5, "{s}: at {d:.1},{d:.1}, handles say {d:.1},{d:.1}", .{ case.json, sx / count, sy / count, wx, wy });
+    }
+}
+
+// A sharp black and white boundary at x = n/2, in an image n wide.
+fn twoHalves(a: std.mem.Allocator, n: usize) ![]f32 {
+    const img = try a.alloc(f32, n * n * 3);
+    for (0..n) |y| for (0..n) |x| {
+        @memset(img[(y * n + x) * 3 ..][0..3], if (x < n / 2) 0.05 else 0.8);
+    };
+    return img;
+}
+
+// How many pixels the boundary's change is spread over, as a share of the width.
+fn spread(r: Picture) f64 {
+    var count: usize = 0;
+    const y = r.h / 2;
+    const lo = level(r, 0, y);
+    const hi = level(r, r.w - 1, y);
+    for (0..r.w) |x| {
+        const v = level(r, x, y);
+        if (v > lo + 8 and v < hi - 8) count += 1;
+    }
+    return @as(f64, @floatFromInt(count)) / @as(f64, @floatFromInt(r.w));
+}
+
+fn maskBlur(c: Ctx) !void {
+    const small = 256;
+    const big = 1024;
+    const json = "{\"masks\":[{\"blur\":100}]}";
+    const sharp = try c.run(small, small, try twoHalves(c.arena, small), "{}", null);
+    try expect(spread(sharp) < 0.02, "the test's picture isn't sharp: {d}", .{spread(sharp)});
+    const soft = try c.run(small, small, try twoHalves(c.arena, small), json, null);
+    const soft_big = try c.run(big, big, try twoHalves(c.arena, big), json, null);
+    try expect(spread(soft) > 0.02, "not blurred: {d}", .{spread(soft)});
+    try expect(@abs(spread(soft) - spread(soft_big)) < 0.012, "{d} at 256, {d} at 1024", .{ spread(soft), spread(soft_big) });
+    // Only the top half is masked: the bottom stays sharp.
+    const part = try c.run(small, small, try twoHalves(c.arena, small), "{\"masks\":[{\"shape\":\"linear\",\"from\":[0.5,0.25],\"to\":[0.5,0.3],\"blur\":100}]}", null);
+    var below: usize = 0;
+    const y = small - 10;
+    for (0..small) |x| {
+        const v = level(part, x, y);
+        if (v > level(part, 0, y) + 8 and v < level(part, small - 1, y) - 8) below += 1;
+    }
+    try expect(below <= 5, "below the mask it's blurred too: {d}", .{below});
+    var above: usize = 0;
+    for (0..small) |x| {
+        const v = level(part, x, 10);
+        if (v > level(part, 0, 10) + 8 and v < level(part, small - 1, 10) - 8) above += 1;
+    }
+    try expect(above > 5, "the masked part isn't blurred: {d}", .{above});
+}
+
+fn maskBlurNoBleed(c: Ctx) !void {
+    // Dark background left, a bright "person" right. A gradient with a hard edge selects the left.
+    const n = 256;
+    const img = try twoHalves(c.arena, n);
+    const base = try c.run(n, n, img, "{}", null);
+    const r = try c.run(n, n, img, "{\"masks\":[{\"shape\":\"linear\",\"from\":[0.495,0.5],\"to\":[0.5,0.5],\"blur\":100}]}", null);
+    const beside = level(r, n / 2 - 6, n / 2);
+    try expect(near(beside, level(base, n / 2 - 6, n / 2), 3), "the bright side bled in: {d}", .{beside});
+    try expect(near(level(r, n / 2 + 6, n / 2), level(base, n / 2 + 6, n / 2), 1), "the person changed", .{});
+}
+
+fn maskShown(c: Ctx) !void {
+    const image = try grey(c.arena, &.{ 0.2, 0.2 });
+    const halves = try c.arena.alloc(u16, image.len);
+    for (image, halves) |v, *o| o.* = half(v);
+    try c.p.setSource(2, 1, halves.ptr);
+    const r = c.recipe("{\"masks\":[{\"shape\":\"linear\",\"from\":[0,0.5],\"to\":[0.5,0.5]}]}");
+    var t = try Pipeline.target(2, 1, gl.RGBA8, gl.UNSIGNED_BYTE);
+    defer t.free();
+    var px: [8]u8 = undefined;
+    c.p.render(r, .{ .fbo = t.fbo, .width = 2, .height = 1, .show_mask = 0 });
+    gl.glBindFramebuffer(gl.FRAMEBUFFER, t.fbo);
+    gl.glReadPixels(0, 0, 2, 1, gl.RGBA, gl.UNSIGNED_BYTE, &px);
+    try expect(px[0] > @as(u16, px[1]) + 40, "no red over the mask: {any}", .{px[0..3]});
+    try expect(near(px[4], px[5], 1) and near(px[5], px[6], 1), "red outside the mask: {any}", .{px[4..7]});
+    c.p.render(r, .{ .fbo = t.fbo, .width = 2, .height = 1 });
+    gl.glBindFramebuffer(gl.FRAMEBUFFER, t.fbo);
+    gl.glReadPixels(0, 0, 2, 1, gl.RGBA, gl.UNSIGNED_BYTE, &px);
+    try expect(near(px[0], px[1], 1) and near(px[1], px[2], 1), "red without asking: {any}", .{px[0..3]});
+}
+
+fn maskExport(c: Ctx) !void {
+    const n = 32;
+    const img = try c.arena.alloc(f32, n * n * 3);
+    for (0..n * n) |i| {
+        const f: f32 = @as(f32, @floatFromInt(i)) / (n * n);
+        img[i * 3] = f;
+        img[i * 3 + 1] = 0.3;
+        img[i * 3 + 2] = 1 - f;
+    }
+    const json = "{\"crop\":{\"rotate\":90},\"masks\":[{\"shape\":\"radial\",\"edits\":{\"exposure\":1}},{\"shape\":\"linear\",\"hue\":{\"centre\":250,\"width\":60},\"colour\":{\"blues\":{\"sat\":-50}}}]}";
+    const preview = try c.run(n, n, img, json, null);
+    const exported = try Exporter.renderPixels(c.p, gpa, c.recipe(json), 8, false);
+    defer gpa.free(exported.data);
+    var worst: u32 = 0;
+    for (0..n * n) |i| for (0..3) |k| {
+        worst = @max(worst, @abs(@as(i32, preview.px[i * 4 + k]) - exported.data[i * 3 + k]));
+    };
+    try expect(worst <= 2, "off by {d} levels", .{worst});
+}
+
+fn maskStored(c: Ctx) !void {
+    const io = c.io;
+    const folder = try std.fmt.allocPrintSentinel(c.arena, "/tmp/doka-probe-stored-{d}", .{std.c.getpid()}, 0);
+    try std.Io.Dir.cwd().createDirPath(io, folder);
+    defer std.Io.Dir.cwd().deleteTree(io, folder) catch {};
+    const root = try std.Io.Dir.cwd().openDir(io, folder, .{});
+    defer root.close(io);
+    // The left half.
+    const pixels = [_]u8{ 255, 0 };
+    try core.store.saveMask(io, c.arena, root, "half.png", &pixels, 2, 1);
+    Pipeline.masks_root = folder;
+    defer Pipeline.masks_root = "";
+    const image = try grey(c.arena, &.{ 0.1, 0.1, 0.1, 0.1 });
+    const base = level(try c.run(4, 1, image, "{}", null), 0, 0);
+    const json = "{\"masks\":[{\"shape\":\"subject\",\"file\":\"half.png\",\"edits\":{\"exposure\":1}}]}";
+    const r = try c.run(4, 1, image, json, null);
+    try expect(level(r, 0, 0) > base + 30 and near(level(r, 3, 0), base, 1), "got {d}, {d} from {d}", .{ level(r, 0, 0), level(r, 3, 0), base });
+    const exported = try Exporter.renderPixels(c.p, gpa, c.recipe(json), 8, false);
+    defer gpa.free(exported.data);
+    try expect(near(exported.data[0], level(r, 0, 0), 2) and near(exported.data[9], level(r, 3, 0), 2), "the export differs", .{});
+    // Another pipeline starts with nothing on its GPU, like a restart.
+    var fresh = try Pipeline.init(gpa, c.p.es);
+    const again = Ctx{ .p = &fresh, .arena = c.arena, .io = io };
+    const r2 = try again.run(4, 1, image, json, null);
+    try expect(std.mem.eql(u8, r.px, r2.px), "not the same after a restart", .{});
+    const missing = try c.run(4, 1, image, "{\"masks\":[{\"shape\":\"subject\",\"file\":\"gone.png\",\"edits\":{\"exposure\":1}}]}", null);
+    try expect(near(level(missing, 0, 0), base, 1), "a missing file changed the photo", .{});
+    const unfound = try c.run(4, 1, image, "{\"masks\":[{\"shape\":\"subject\",\"edits\":{\"exposure\":1}}]}", null);
+    try expect(near(level(unfound, 0, 0), base, 1), "a subject not yet found changed the photo", .{});
+}
+
+// Needs the download and testdata/photos; skipped without them.
+fn subjectFinds(c: Ctx) !void {
+    const home = std.c.getenv("HOME") orelse return;
+    const models = try std.fmt.allocPrint(c.arena, "{s}/.config/doka/models", .{home});
+    var s: Subject = .{ .gpa = gpa, .io = c.io, .pool = undefined, .models_dir = models };
+    if (!s.available()) return std.debug.print("     (skipped: no download)\n", .{});
+    const path: [:0]const u8 = "testdata/photos/P8120024.JPG";
+    std.Io.Dir.cwd().access(c.io, path, .{}) catch return;
+    const start = std.Io.Timestamp.now(c.io, .awake);
+    const m = try s.segment(path, &.{.{ 0.5, 0.5, 1 }});
+    defer gpa.free(m.pixels);
+    const first = start.durationTo(std.Io.Timestamp.now(c.io, .awake)).toMilliseconds();
+    const again_start = std.Io.Timestamp.now(c.io, .awake);
+    const m2 = try s.segment(path, &.{ .{ 0.5, 0.5, 1 }, .{ 0.02, 0.02, 0 } });
+    defer gpa.free(m2.pixels);
+    const second = again_start.durationTo(std.Io.Timestamp.now(c.io, .awake)).toMilliseconds();
+    var on: usize = 0;
+    for (m.pixels) |v| on += @intFromBool(v > 127);
+    const share = @as(f64, @floatFromInt(on)) / @as(f64, @floatFromInt(m.pixels.len));
+    std.debug.print("     {d}x{d}, {d} ms first, {d} ms after, {d:.1}% selected\n", .{ m.width, m.height, first, second, share * 100 });
+    const centre = m.pixels[@as(usize, m.height / 2) * m.width + m.width / 2];
+    try expect(centre > 127, "the clicked point isn't in the mask: {d}", .{centre});
+    try expect(share < 0.95, "it took the whole photo", .{});
+}
+
+var shot_text: ?[]u8 = null;
+var shot_mask: ?usize = null;
+
+fn stubScreenshot(shot: App.Shot) void {
+    shot_text = shot.text;
+    shot_mask = shot.show_mask;
+    shot.call.finish(Mcp.textResult(shot.call.gpa, shot.text, false) catch unreachable);
+}
+
+fn stubEdited() void {}
+
+// Needs the download and testdata/photos; skipped without them. The real panel, tool and worker
+// threads, on a copy in a temp folder: only the window is missing.
+fn subjectEndToEnd(c: Ctx) !void {
+    const io = c.io;
+    const home = std.c.getenv("HOME") orelse return;
+    const photo = std.Io.Dir.cwd().readFileAlloc(io, "testdata/photos/P8120024.JPG", gpa, .limited(64 << 20)) catch return;
+    defer gpa.free(photo);
+    const a = c.arena;
+    const folder = try std.fmt.allocPrintSentinel(a, "/tmp/doka-probe-subject-{d}", .{std.c.getpid()}, 0);
+    try std.Io.Dir.cwd().createDirPath(io, folder);
+    defer std.Io.Dir.cwd().deleteTree(io, folder) catch {};
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fmt.allocPrint(a, "{s}/a.jpg", .{folder}), .data = photo });
+    var pool: Pool = .{ .io = io };
+    try pool.start();
+    defer pool.stop();
+    var s: Subject = .{ .gpa = gpa, .io = io, .pool = &pool, .models_dir = try std.fmt.allocPrint(a, "{s}/.config/doka/models", .{home}) };
+    if (!s.available()) return std.debug.print("     (skipped: no download)\n", .{});
+    var app: App = .{ .gpa = gpa, .io = io, .subject = &s };
+    defer app.closeFolder();
+    try app.openFolder(folder);
+    app.hooks = .{ .edited = stubEdited, .screenshot = stubScreenshot };
+    Pipeline.masks_root = folder;
+    defer Pipeline.masks_root = "";
+    var canvas: Canvas = .{ .gpa = gpa, .photos = undefined, .looks = undefined };
+    _ = canvas.create();
+    var p: MasksPanel = .{ .gpa = gpa, .app = &app, .canvas = &canvas, .subject = &s, .edited = panelEdited, .layer_changed = panelSync };
+    panel_under_test = &p;
+    app_under_test = &app;
+    p.create();
+    panelSync();
+
+    // By hand: + Subject, then a click.
+    gtk.g_signal_emit_by_name(p.add_buttons[0], "clicked");
+    try expect(canvas.picking and canvas.show_mask == 0, "not picking: {any}", .{canvas.show_mask});
+    canvas.on_pick.?.f(canvas.on_pick.?.ctx, .{ 0.5, 0.5 }, true);
+    try expect(p.waiting, "not waiting for the answer", .{});
+    var turns: usize = 0;
+    while (p.waiting and turns < 2000) : (turns += 1) _ = gtk.g_main_context_iteration(null, 0) + sleepMs(5);
+    try expect(!p.waiting, "no answer", .{});
+    var r = try app.recipe(a);
+    try expect(r.masks.len == 1 and r.masks[0].shape == .subject and r.masks[0].file.len > 0 and r.masks[0].points.len == 1, "got {any}", .{r.masks});
+    const lin = try core.decode.linear(gpa, "testdata/photos/P8120024.JPG", 256);
+    var decoded = lin;
+    defer decoded.deinit(gpa);
+    try c.p.setSource(@intCast(lin.width), @intCast(lin.height), lin.rgb.ptr);
+    const with = try c.draw(c.recipe(try std.fmt.allocPrint(a, "{{\"masks\":[{{\"shape\":\"subject\",\"file\":\"{s}\",\"edits\":{{\"exposure\":2}}}}]}}", .{r.masks[0].file})), null);
+    const without = try c.draw(.{}, null);
+    try expect(!std.mem.eql(u8, with.px, without.px), "the saved mask does nothing", .{});
+    // Another click adds to it, Shift-click marks "not this".
+    canvas.on_pick.?.f(canvas.on_pick.?.ctx, .{ 0.02, 0.02 }, false);
+    turns = 0;
+    while (p.waiting and turns < 2000) : (turns += 1) _ = gtk.g_main_context_iteration(null, 0) + sleepMs(5);
+    r = try app.recipe(a);
+    try expect(r.masks[0].points.len == 2 and r.masks[0].points[1][2] == 0, "points {any}", .{r.masks[0].points});
+    p.setActive(false);
+    try expect(!canvas.picking, "still picking in another tab", .{});
+
+    // Claude.
+    const arguments = "{\"points\":[[0.5,0.5]],\"name\":\"Portrait\",\"edits\":{\"exposure\":0.5}}";
+    const call = try gpa.create(Mcp.Call);
+    call.* = .{ .gpa = gpa, .io = io, .name = "mask_subject", .arguments = arguments, .server = undefined };
+    shot_text = null;
+    tools.run(&app, call);
+    turns = 0;
+    while (shot_text == null and call.result == null and turns < 2000) : (turns += 1) _ = gtk.g_main_context_iteration(null, 0) + sleepMs(5);
+    try expect(call.result != null, "the tool never answered", .{});
+    defer gpa.free(call.result.?);
+    defer gpa.destroy(call);
+    r = try app.recipe(a);
+    try expect(r.masks.len == 2 and std.mem.eql(u8, r.masks[1].name, "Portrait") and r.masks[1].edits.exposure == 0.5 and r.masks[1].file.len > 0, "tool: {s}", .{call.result.?});
+    try expect(shot_mask == 1, "the view didn't show the new mask", .{});
+    // A second call changes that mask, keeps its edits, and adds a point.
+    const again = try gpa.create(Mcp.Call);
+    defer gpa.destroy(again);
+    again.* = .{ .gpa = gpa, .io = io, .name = "mask_subject", .arguments = "{\"mask\":1,\"points\":[[0.4,0.4]],\"exclude\":[[0.9,0.9]]}", .server = undefined };
+    tools.run(&app, again);
+    turns = 0;
+    while (again.result == null and turns < 2000) : (turns += 1) _ = gtk.g_main_context_iteration(null, 0) + sleepMs(5);
+    try expect(again.result != null, "the second call never answered", .{});
+    defer gpa.free(again.result.?);
+    r = try app.recipe(a);
+    try expect(r.masks.len == 2 and r.masks[1].points.len == 3 and r.masks[1].edits.exposure == 0.5, "changing it: {s}", .{again.result.?});
+    app.flush();
+}
+
+extern fn usleep(us: c_uint) c_int;
+
+fn sleepMs(ms: u32) c_int {
+    return usleep(ms * 1000);
+}
+
+var panel_under_test: *MasksPanel = undefined;
+var app_under_test: *App = undefined;
+
+fn panelEdited() void {}
+
+fn panelSync() void {
+    var scratch: std.heap.ArenaAllocator = .init(gpa);
+    defer scratch.deinit();
+    panel_under_test.sync(app_under_test.recipe(scratch.allocator()) catch return);
+}
+
+// The real panel and app without a window, on a copy of a photo in a temp folder: no display is
+// needed to press its buttons.
+fn maskPanel(c: Ctx) !void {
+    const io = c.io;
+    const photo = std.Io.Dir.cwd().readFileAlloc(io, "testdata/photos/P8120024.JPG", gpa, .limited(64 << 20)) catch return;
+    defer gpa.free(photo);
+    const folder = try std.fmt.allocPrintSentinel(c.arena, "/tmp/doka-probe-layers-{d}", .{std.c.getpid()}, 0);
+    try std.Io.Dir.cwd().createDirPath(io, folder);
+    defer std.Io.Dir.cwd().deleteTree(io, folder) catch {};
+    const name = try std.fmt.allocPrint(c.arena, "{s}/a.jpg", .{folder});
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = name, .data = photo });
+    var app: App = .{ .gpa = gpa, .io = io };
+    defer app.closeFolder();
+    try app.openFolder(folder);
+    var canvas: Canvas = .{ .gpa = gpa, .photos = undefined, .looks = undefined };
+    _ = canvas.create();
+    var p: MasksPanel = .{ .gpa = gpa, .app = &app, .canvas = &canvas, .edited = panelEdited, .layer_changed = panelSync };
+    panel_under_test = &p;
+    app_under_test = &app;
+    p.create();
+    panelSync();
+    try expect(p.selected == null and canvas.active_mask == null, "starts on a mask", .{});
+
+    gtk.g_signal_emit_by_name(p.add_buttons[2], "clicked");
+    gtk.g_signal_emit_by_name(p.add_buttons[1], "clicked");
+    const a = c.arena;
+    var r = try app.recipe(a);
+    try expect(r.masks.len == 2 and r.masks[0].shape == .radial and r.masks[1].shape == .linear, "added {d}", .{r.masks.len});
+    try expect(std.mem.eql(u8, r.masks[1].name, "Gradient"), "named {s}", .{r.masks[1].name});
+    try expect(p.selected == 1 and canvas.active_mask == 1, "the new one isn't picked", .{});
+
+    p.setEdit("exposure", -1, 5);
+    p.setEdit("exposure", -1.5, 5);
+    gtk.gtk_toggle_button_set_active(p.invert_button, 1);
+    gtk.gtk_toggle_button_set_active(p.hue_buttons[5], 1);
+    r = try app.recipe(a);
+    const m = r.masks[1];
+    try expect(m.edits.exposure == -1.5 and r.edits.exposure == 0, "the slider went to the wrong layer", .{});
+    try expect(m.invert and m.hue.centre == 250 and m.hue.width == 45, "limits: {any}", .{m.hue});
+    try expect(r.masks[0].edits.exposure == 0 and !r.masks[0].invert, "the other mask changed", .{});
+
+    gtk.gtk_toggle_button_set_active(p.show_button, 1);
+    try expect(canvas.show_mask == 1, "not shown", .{});
+    p.setActive(false);
+    try expect(canvas.show_mask == null and canvas.active_mask == null, "still on in another tab", .{});
+    p.setActive(true);
+
+    canvas.on_mask.?.f(canvas.on_mask.?.ctx, 1, .{ .from = .{ 0.2, 0.1 }, .to = .{ 0.8, 0.9 }, .centre = .{ 0, 0 }, .radius = .{ 1, 1 } }, 9);
+    r = try app.recipe(a);
+    try expect(r.masks[1].from[0] == 0.2 and r.masks[1].to[1] == 0.9 and r.masks[1].edits.exposure == -1.5, "moving it lost something", .{});
+
+    // Undo the move, the hue, the invert, the slider's drag, then the mask itself.
+    for (0..5) |_| _ = try app.undo();
+    panelSync();
+    r = try app.recipe(a);
+    try expect(r.masks.len == 1 and p.selected == null and canvas.active_mask == null, "after undo: {d} masks, picked {any}", .{ r.masks.len, p.selected });
+
+    gtk.g_signal_emit_by_name(p.whole_button, "clicked");
+    p.selected = 0;
+    panelSync();
+    p.resetEdits();
+    gtk.g_signal_emit_by_name(gtk.gtk_widget_get_last_child(gtk.gtk_widget_get_parent(p.invert_button)).?, "clicked");
+    r = try app.recipe(a);
+    try expect(r.masks.len == 0 and p.selected == null, "not removed", .{});
+    app.flush();
 }
 
 // Needs testdata/photos; skipped without it, as photo-core's tests are.

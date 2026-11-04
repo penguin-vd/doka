@@ -95,6 +95,105 @@ test "an unedited recipe is default; any change makes it not" {
     try testing.expect(!r.isDefault());
 }
 
+test "masks write only what differs, and come back" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var r: Recipe = .{};
+    try testing.expect(r.isDefault());
+    r.masks = &.{.{ .name = "Sky", .shape = .linear, .from = .{ 0.5, 0.1 }, .edits = .{ .exposure = -0.5 }, .colour = .{ .blues = .{ .sat = 20 } } }};
+    try testing.expect(!r.isDefault());
+    const json = try r.writeAlloc(a);
+    try testing.expect(std.mem.indexOf(u8, json, "\"radius\"") == null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"feather\"") == null);
+    try testing.expect(std.mem.indexOf(u8, json, "0.1") != null and std.mem.indexOf(u8, json, "0.10000") == null);
+    const back = try Recipe.parse(a, json);
+    try testing.expectEqualStrings("Sky", back.masks[0].name);
+    try testing.expectEqual(.linear, back.masks[0].shape);
+    try testing.expectEqual([2]f32{ 0.5, 0.1 }, back.masks[0].from);
+    try testing.expectEqual(-0.5, back.masks[0].edits.exposure);
+    try testing.expectEqual(20, back.masks[0].colour.blues.sat);
+    try testing.expect(back.masks[0].hasEdits());
+    try testing.expect(!(Recipe.Mask{ .name = "Empty" }).hasEdits());
+    try testing.expect((Recipe.Mask{ .blur = 10 }).hasEdits());
+    try testing.expectEqual(100, (try Recipe.parse(a, "{\"masks\":[{\"blur\":500}]}")).masks[0].blur);
+}
+
+test "a patch replaces the list of masks whole, and an empty list removes them" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var base: Recipe = .{};
+    base.masks = &.{ .{ .name = "One" }, .{ .name = "Two" } };
+    const one = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"masks\":[{\"name\":\"Three\"}]}", .{});
+    const r = try Recipe.apply(a, base, one);
+    try testing.expectEqual(1, r.masks.len);
+    try testing.expectEqualStrings("Three", r.masks[0].name);
+    const none = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"masks\":[]}", .{});
+    try testing.expectEqual(0, (try Recipe.apply(a, r, none)).masks.len);
+}
+
+test "a mask's values are clamped, and the list stops at the most it can hold" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const r = try Recipe.parse(a,
+        \\{"masks":[{"from":[-9,9],"radius":[0,9],"feather":300,"brightness":{"min":80,"max":20},
+        \\"hue":{"centre":999,"width":-5},"edits":{"exposure":9,"contrast":-300},"colour":{"reds":{"hue":500}}}]}
+    );
+    const m = r.masks[0];
+    try testing.expectEqual([2]f32{ -1, 2 }, m.from);
+    try testing.expectEqual([2]f32{ 0.01, 2 }, m.radius);
+    try testing.expectEqual(100, m.feather);
+    try testing.expectEqual(20, m.brightness.min);
+    try testing.expectEqual(80, m.brightness.max);
+    try testing.expectEqual(360, m.hue.centre);
+    try testing.expectEqual(0, m.hue.width);
+    try testing.expectEqual(5, m.edits.exposure);
+    try testing.expectEqual(-100, m.edits.contrast);
+    try testing.expectEqual(100, m.colour.reds.hue);
+    var many: std.Io.Writer.Allocating = .init(a);
+    try many.writer.writeAll("{\"masks\":[{}");
+    for (0..Recipe.max_masks + 3) |_| try many.writer.writeAll(",{}");
+    try many.writer.writeAll("]}");
+    try testing.expectEqual(Recipe.max_masks, (try Recipe.parse(a, many.written())).masks.len);
+}
+
+test "a subject mask keeps its file and points, and a file name can't leave the masks folder" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const r = try Recipe.parse(a, "{\"masks\":[{\"shape\":\"subject\",\"file\":\"0123abc.png\",\"points\":[[0.4,0.5,1],[2,-1,0.2]]}]}");
+    try testing.expectEqualStrings("0123abc.png", r.masks[0].file);
+    try testing.expectEqual([3]f32{ 1, 0, 0 }, r.masks[0].points[1]);
+    const back = try Recipe.parse(a, try r.writeAlloc(a));
+    try testing.expectEqual(.subject, back.masks[0].shape);
+    try testing.expectEqual([3]f32{ 0.4, 0.5, 1 }, back.masks[0].points[0]);
+    for ([_][]const u8{ "../../secret.png", "/etc/x.png", "a/b.png", "x.jpg", ".png" }) |bad| {
+        try testing.expect(!store.validMaskName(bad));
+    }
+    const bad = try Recipe.parse(a, "{\"masks\":[{\"shape\":\"subject\",\"file\":\"../../secret.png\"}]}");
+    try testing.expectEqualStrings("", bad.masks[0].file);
+}
+
+test "a mask picture saved and loaded comes back" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var pixels: [12]u8 = undefined;
+    for (&pixels, 0..) |*p, i| p.* = @intCast(i * 20);
+    try store.saveMask(io, testing.allocator, tmp.dir, "abc.png", &pixels, 4, 3);
+    var buf: [std.c.PATH_MAX]u8 = undefined;
+    const n = try tmp.dir.realPathFile(io, ".", &buf);
+    const back = try store.loadMask(testing.allocator, buf[0..n], "abc.png");
+    defer testing.allocator.free(back.pixels);
+    try testing.expectEqual(4, back.width);
+    try testing.expectEqual(3, back.height);
+    try testing.expectEqualSlices(u8, &pixels, back.pixels);
+    try testing.expectError(error.BadPath, store.saveMask(io, testing.allocator, tmp.dir, "../x.png", &pixels, 4, 3));
+    try testing.expectError(error.BadPath, store.loadMask(testing.allocator, buf[0..n], "../x.png"));
+}
+
 test "recipes and thumbnails mirror the photo's path under .photo-editor" {
     const p = try store.recipePath(testing.allocator, "trip/photo-04.jpg");
     defer testing.allocator.free(p);

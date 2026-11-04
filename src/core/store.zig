@@ -2,9 +2,11 @@
 //! photos stay untouched and the edits move with the folder.
 //!   trip/photo-04.jpg → .photo-editor/recipes/trip/photo-04.jpg.json
 //!                       .photo-editor/thumbs/trip/photo-04.jpg
+//! Subject masks are pictures with made-up names: .photo-editor/masks/0123abc.png
 const std = @import("std");
 const Io = std.Io;
 const Recipe = @import("recipe.zig");
+const vips = @import("vips.zig");
 
 pub const dir_name = ".photo-editor";
 
@@ -62,6 +64,55 @@ pub fn writeAtomic(io: Io, gpa: std.mem.Allocator, root: Io.Dir, path: []const u
     defer gpa.free(tmp);
     try root.writeFile(io, .{ .sub_path = tmp, .data = data });
     try root.rename(tmp, root, path, io);
+}
+
+/// A subject mask's name: comes from a recipe, so it mustn't be able to point anywhere else.
+pub fn validMaskName(name: []const u8) bool {
+    const extension = ".png";
+    if (name.len == 0) return true;
+    if (name.len > 64 or name.len <= extension.len or !std.mem.endsWith(u8, name, extension)) return false;
+    for (name[0 .. name.len - extension.len]) |c| {
+        if (!std.ascii.isLower(c) and !std.ascii.isDigit(c)) return false;
+    }
+    return true;
+}
+
+fn maskPath(gpa: std.mem.Allocator, name: []const u8) ![:0]u8 {
+    if (name.len == 0 or !validMaskName(name)) return error.BadPath;
+    return std.fmt.allocPrintSentinel(gpa, dir_name ++ "/masks/{s}", .{name}, 0);
+}
+
+/// Saves a subject mask: width × height, one byte each.
+pub fn saveMask(io: Io, gpa: std.mem.Allocator, root: Io.Dir, name: []const u8, pixels: []const u8, width: u32, height: u32) !void {
+    const path = try maskPath(gpa, name);
+    defer gpa.free(path);
+    const img = vips.c.vips_image_new_from_memory_copy(pixels.ptr, pixels.len, @intCast(width), @intCast(height), 1, .uchar) orelse return vips.fail();
+    defer vips.unref(img);
+    var buf: ?[*]u8 = null;
+    var len: usize = 0;
+    try vips.check(vips.c.vips_image_write_to_buffer(img, ".png", &buf, &len, "compression", @as(c_int, 6), vips.end));
+    const png = buf.?[0..len];
+    defer vips.freeMemory(png);
+    try writeAtomic(io, gpa, root, path, png);
+}
+
+pub const MaskPicture = struct { width: u32, height: u32, pixels: []u8 };
+
+/// A saved subject mask from the folder at `root`; `pixels` are for `gpa` to free.
+pub fn loadMask(gpa: std.mem.Allocator, root: []const u8, name: []const u8) !MaskPicture {
+    const rel = try maskPath(gpa, name);
+    defer gpa.free(rel);
+    const path = try std.fmt.allocPrintSentinel(gpa, "{s}/{s}", .{ root, rel }, 0);
+    defer gpa.free(path);
+    const img = vips.c.vips_image_new_from_file(path, vips.end) orelse return error.NoMaskFile;
+    defer vips.unref(img);
+    const width = vips.width(img);
+    const height = vips.height(img);
+    if (vips.bands(img) != 1) return error.NoMaskFile;
+    const memory = try vips.toMemory(img);
+    defer vips.freeMemory(memory);
+    if (memory.len != @as(usize, width) * height) return error.NoMaskFile;
+    return .{ .width = width, .height = height, .pixels = try gpa.dupe(u8, memory) };
 }
 
 pub fn edited(io: Io, root: Io.Dir, gpa: std.mem.Allocator, rel: []const u8) bool {

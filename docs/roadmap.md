@@ -42,7 +42,7 @@ The photos are also in Immich. Endpoints below are from Immich's OpenAPI spec (`
 
 ## Editing
 
-- **Masks** (L; SPEC.md puts masks out of v1): see `docs/masks-plan.md`.
+- **Masks:** gradients, circles, ranges and click-a-subject are in. Depth next (L): see `docs/masks-plan.md`.
 - **Depth** (L, SPEC.md v2): Depth Anything V2 Small through ONNX Runtime's C API; `needs: ["depth"]`
   and `u_depth` are already wired (flat for now). Fog, haze, grain by distance.
 - **Presets** (S–M, SPEC.md v2): save a recipe's look-and-colour part, apply it in one click.

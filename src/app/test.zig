@@ -87,6 +87,9 @@ test "set_edits refuses a field the recipe doesn't have, at any depth" {
     try testing.expectError(error.UnknownField, tools.validate(Recipe, try patch(a, "{\"edits\":{\"bogus\":1}}")));
     try testing.expectError(error.UnknownField, tools.validate(Recipe, try patch(a, "{\"colour\":{\"teal\":{\"hue\":1}}}")));
     try testing.expectError(error.UnknownField, tools.validate(Recipe, try patch(a, "{\"shaders\":[{\"name\":\"x\",\"strenght\":1}]}")));
+    try tools.validate(Recipe, try patch(a, "{\"masks\":[{\"name\":\"Sky\",\"shape\":\"linear\",\"from\":[0.5,0],\"hue\":{\"centre\":250,\"width\":45},\"edits\":{\"exposure\":-1},\"colour\":{\"blues\":{\"sat\":10}}}]}"));
+    try testing.expectError(error.UnknownField, tools.validate(Recipe, try patch(a, "{\"masks\":[{\"feathr\":1}]}")));
+    try testing.expectError(error.UnknownField, tools.validate(Recipe, try patch(a, "{\"masks\":[{\"edits\":{\"bogus\":1}}]}")));
 }
 
 test "MCP answers only its own host" {
@@ -100,7 +103,7 @@ test "Claude's tool list is valid JSON, one entry per tool with a schema" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const list = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), tools.definitions, .{});
-    const want = [_][]const u8{ "get_view", "set_edits", "open_photo", "list_photos", "undo", "export", "list_looks", "list_shaders", "get_shader", "save_shader", "delete_shader", "bake_look" };
+    const want = [_][]const u8{ "get_view", "set_edits", "mask_subject", "open_photo", "list_photos", "undo", "export", "list_looks", "list_shaders", "get_shader", "save_shader", "delete_shader", "bake_look" };
     try testing.expectEqual(want.len, list.array.items.len);
     for (list.array.items, want) |t, name| {
         try testing.expectEqualStrings(name, t.object.get("name").?.string);

@@ -54,18 +54,32 @@ before: bool = false,
 // The line to drag across the photo.
 compare: bool = false,
 split: f64 = 0.5,
-drag: enum { pan, split, crop_move, nw, ne, sw, se, none } = .pan,
+drag: enum { pan, split, crop_move, nw, ne, sw, se, none, mask } = .pan,
 drag_rect: cropping.Rect = .{ 0, 0, 1, 1 },
 // A crop changed by dragging: patch json, gesture is the window's.
 on_crop: ?*const fn (rect: cropping.Rect, gesture: u64) void = null,
 crop_gesture: u64 = 0,
 aspect_ratio: ?f64 = null,
+// The mask being edited, its handles on the photo; and the one painted red.
+active_mask: ?usize = null,
+show_mask: ?usize = null,
+// A mask moved by its handles: patch json, gesture is the window's.
+on_mask: ?struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque, index: usize, place: Recipe.Mask.Place, gesture: u64) void } = null,
+// Clicks on the photo pick a subject's points: 0..1 of the photo as decoded; `keep` false with Shift.
+picking: bool = false,
+on_pick: ?struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque, at: [2]f32, keep: bool) void } = null,
+mask_handle: Handle = .from,
+mask_start: Recipe.Mask.Place = undefined,
+mask_gesture: u64 = 0,
+drag_at: [2]f64 = .{ 0, 0 },
 // Told after each drawn frame, and when a new photo is on the GPU.
 on_drawn: ?*const fn () void = null,
 on_installed: ?*const fn () void = null,
 zoom_label: ?*anyopaque = null,
 
 const Layout = struct { box: [4]f64, view: [4]f64, image: [2]f64 };
+
+const Handle = enum { from, to, middle, centre, across, down };
 
 pub fn create(c: *Canvas) *anyopaque {
     c.recipe_arena = .init(c.gpa);
@@ -101,6 +115,11 @@ pub fn create(c: *Canvas) *anyopaque {
 pub fn redraw(c: *Canvas) void {
     gtk.gtk_gl_area_queue_render(c.area);
     gtk.gtk_widget_queue_draw(c.overlay);
+}
+
+pub fn setPicking(c: *Canvas, on: bool) void {
+    c.picking = on;
+    gtk.gtk_widget_set_cursor_from_name(c.area, if (on) "crosshair" else null);
 }
 
 pub fn setCropMode(c: *Canvas, on: bool) void {
@@ -376,6 +395,7 @@ fn onRender(area: *anyopaque, _: *anyopaque, ctx: ?*anyopaque) callconv(.c) c_in
         .dither = 1.0 / 255.0,
         .uncropped = c.crop_mode,
         .view = .{ @floatCast(l.view[0]), @floatCast(l.view[1]), @floatCast(l.view[2]), @floatCast(l.view[3]) },
+        .show_mask = if (c.before) null else c.show_mask,
     };
     c.pipeline.?.render(c.shownRecipe(), out);
     // Before/after: the original over the left of the line.
@@ -404,12 +424,21 @@ fn onScroll(_: *anyopaque, _: f64, dy: f64, ctx: ?*anyopaque) callconv(.c) c_int
 // Grab distance for the crop's corners and the before/after line, pixels.
 const grab = 14.0;
 
-fn onDragBegin(_: *anyopaque, x: f64, y: f64, ctx: ?*anyopaque) callconv(.c) void {
+fn onDragBegin(gesture: *anyopaque, x: f64, y: f64, ctx: ?*anyopaque) callconv(.c) void {
     const c: *Canvas = @ptrCast(@alignCast(ctx));
     c.drag_centre = c.centre;
     c.drag = .pan;
     if (!c.ready()) return;
     const l = c.layout(c.zoom, c.centre);
+    if (c.picking and !c.crop_mode) {
+        c.drag = .none;
+        const on_pick = c.on_pick orelse return;
+        if (x < l.box[0] or y < l.box[1] or x > l.box[0] + l.box[2] or y > l.box[1] + l.box[3]) return;
+        const at = c.onPhoto(l, x, y);
+        const keep = gtk.gtk_event_controller_get_current_event_state(gesture) & gtk.shift_mask == 0;
+        on_pick.f(on_pick.ctx, .{ @floatCast(std.math.clamp(at[0], 0, 1)), @floatCast(std.math.clamp(at[1], 0, 1)) }, keep);
+        return;
+    }
     if (c.crop_mode) {
         const r = c.recipe.crop.rect;
         c.drag_rect = .{ r[0], r[1], r[2], r[3] };
@@ -428,6 +457,184 @@ fn onDragBegin(_: *anyopaque, x: f64, y: f64, ctx: ?*anyopaque) callconv(.c) voi
         if (@abs(x - (l.box[0] + c.split * l.box[2])) < grab and y > l.box[1] and y < l.box[1] + l.box[3]) c.drag = .split;
         c.drag_centre = if (c.drag == .split) .{ x, y } else c.centre;
     }
+    if (c.drag == .pan) c.grabMaskHandle(x, y);
+}
+
+// ---- A mask's handles ----
+
+fn geometry(c: *const Canvas) cropping.Geometry {
+    const r = c.recipe;
+    const size = c.pipeline.?.outputSize(.{ .crop = .{ .rotate = r.crop.rotate } }, true);
+    const rect = r.crop.rect;
+    return .{
+        .rect = if (c.crop_mode) .{ 0, 0, 1, 1 } else .{ rect[0], rect[1], rect[2], rect[3] },
+        .turns = @intCast(@mod(r.crop.rotate / 90, 4)),
+        .flip = r.crop.flip,
+        .angle = std.math.degreesToRadians(@as(f64, r.crop.straighten)),
+        .size = .{ @floatFromInt(size[0]), @floatFromInt(size[1]) },
+    };
+}
+
+// A point of the photo as decoded, on the widget.
+fn onScreen(c: *const Canvas, l: Layout, p: [2]f64) [2]f64 {
+    const o = c.geometry().fromPhoto(p);
+    return .{
+        l.box[0] + (o[0] - l.view[0]) / l.view[2] * l.box[2],
+        l.box[1] + (o[1] - l.view[1]) / l.view[3] * l.box[3],
+    };
+}
+
+// A point of the widget, on the photo as decoded.
+fn onPhoto(c: *const Canvas, l: Layout, x: f64, y: f64) [2]f64 {
+    return c.geometry().toPhoto(.{
+        l.view[0] + (x - l.box[0]) / l.box[2] * l.view[2],
+        l.view[1] + (y - l.box[1]) / l.box[3] * l.view[3],
+    });
+}
+
+fn activeMask(c: *const Canvas) ?Recipe.Mask {
+    if (c.crop_mode or c.before) return null;
+    const i = c.active_mask orelse return null;
+    return if (i < c.recipe.masks.len) c.recipe.masks[i] else null;
+}
+
+fn point64(p: [2]f32) [2]f64 {
+    return .{ p[0], p[1] };
+}
+
+fn handlePoint(m: Recipe.Mask.Place, h: Handle) [2]f64 {
+    const from = point64(m.from);
+    const to = point64(m.to);
+    const centre = point64(m.centre);
+    const radius = point64(m.radius);
+    return switch (h) {
+        .from => from,
+        .to => to,
+        .middle => .{ (from[0] + to[0]) / 2, (from[1] + to[1]) / 2 },
+        .centre => centre,
+        .across => .{ centre[0] + radius[0], centre[1] },
+        .down => .{ centre[0], centre[1] + radius[1] },
+    };
+}
+
+fn handlesOf(shape: Recipe.Mask.Shape) []const Handle {
+    return switch (shape) {
+        .whole, .subject => &.{},
+        .linear => &.{ .middle, .from, .to },
+        .radial => &.{ .centre, .across, .down },
+    };
+}
+
+fn grabMaskHandle(c: *Canvas, x: f64, y: f64) void {
+    const m = c.activeMask() orelse return;
+    const l = c.layout(c.zoom, c.centre);
+    const place = m.place();
+    for (handlesOf(m.shape)) |h| {
+        const at_screen = c.onScreen(l, handlePoint(place, h));
+        if (@abs(x - at_screen[0]) < grab and @abs(y - at_screen[1]) < grab) {
+            c.drag = .mask;
+            c.mask_handle = h;
+            c.mask_start = place;
+            c.drag_at = .{ x, y };
+            c.mask_gesture = @import("slider.zig").nextGesture();
+        }
+    }
+}
+
+fn dragMask(c: *Canvas, dx: f64, dy: f64) void {
+    const i = c.active_mask orelse return;
+    const on_mask = c.on_mask orelse return;
+    const l = c.layout(c.zoom, c.centre);
+    const start = c.onPhoto(l, c.drag_at[0], c.drag_at[1]);
+    const now = c.onPhoto(l, c.drag_at[0] + dx, c.drag_at[1] + dy);
+    const move = [2]f32{ @floatCast(now[0] - start[0]), @floatCast(now[1] - start[1]) };
+    const s = c.mask_start;
+    var p = s;
+    const moved = struct {
+        fn f(a: [2]f32, by: [2]f32) [2]f32 {
+            return .{ a[0] + by[0], a[1] + by[1] };
+        }
+    }.f;
+    switch (c.mask_handle) {
+        .from => p.from = moved(s.from, move),
+        .to => p.to = moved(s.to, move),
+        .middle => {
+            p.from = moved(s.from, move);
+            p.to = moved(s.to, move);
+        },
+        .centre => p.centre = moved(s.centre, move),
+        .across => p.radius[0] = @abs(s.radius[0] + move[0]),
+        .down => p.radius[1] = @abs(s.radius[1] + move[1]),
+    }
+    on_mask.f(on_mask.ctx, i, p, c.mask_gesture);
+}
+
+// A line light on any photo: white over a dark edge.
+fn strokeLine(cr: *gtk.Cairo, points: []const [2]f64) void {
+    for ([_][2]f64{ .{ 3, 0.45 }, .{ 1, 0.95 } }, [_]f64{ 0, 0.957 }) |style, grey| {
+        gtk.cairo_set_line_width(cr, style[0]);
+        gtk.cairo_set_source_rgba(cr, grey, grey, grey, style[1]);
+        for (points, 0..) |p, i| {
+            if (i == 0) gtk.cairo_move_to(cr, p[0], p[1]) else gtk.cairo_line_to(cr, p[0], p[1]);
+        }
+        gtk.cairo_stroke(cr);
+    }
+}
+
+fn drawHandle(cr: *gtk.Cairo, at_screen: [2]f64) void {
+    gtk.cairo_set_source_rgba(cr, 0, 0, 0, 0.5);
+    gtk.cairo_arc(cr, at_screen[0], at_screen[1], 6.5, 0, 2 * std.math.pi);
+    gtk.cairo_fill(cr);
+    gtk.cairo_set_source_rgb(cr, 0.957, 0.957, 0.957);
+    gtk.cairo_arc(cr, at_screen[0], at_screen[1], 5, 0, 2 * std.math.pi);
+    gtk.cairo_fill(cr);
+}
+
+fn drawMask(c: *const Canvas, cr: *gtk.Cairo, l: Layout, m: Recipe.Mask) void {
+    if (m.shape == .whole) return;
+    if (m.shape == .subject) {
+        // The points that found it: light is "this", dark is "not this".
+        for (m.points) |p| {
+            const at = c.onScreen(l, .{ p[0], p[1] });
+            drawHandle(cr, at);
+            if (p[2] < 0.5) {
+                gtk.cairo_set_source_rgb(cr, 0.1, 0.1, 0.1);
+                gtk.cairo_arc(cr, at[0], at[1], 3.5, 0, 2 * std.math.pi);
+                gtk.cairo_fill(cr);
+            }
+        }
+        return;
+    }
+    gtk.cairo_save(cr);
+    defer gtk.cairo_restore(cr);
+    gtk.cairo_rectangle(cr, l.box[0], l.box[1], l.box[2], l.box[3]);
+    gtk.cairo_clip(cr);
+    const place = m.place();
+    if (m.shape == .linear) {
+        // Across the gradient at each end: full effect above the first line, none past the second.
+        const w: f64 = @floatFromInt(c.pipeline.?.width);
+        const h: f64 = @floatFromInt(c.pipeline.?.height);
+        const from = point64(m.from);
+        const to = point64(m.to);
+        const dx = (to[0] - from[0]) * w;
+        const dy = (to[1] - from[1]) * h;
+        const len = @max(1e-6, @sqrt(dx * dx + dy * dy));
+        // Two photos' worth of line: the clip ends it.
+        const reach = 2 * @max(w, h);
+        const ax = -dy / len * reach / w;
+        const ay = dx / len * reach / h;
+        for ([_][2]f64{ from, to }) |p| {
+            strokeLine(cr, &.{ c.onScreen(l, .{ p[0] - ax, p[1] - ay }), c.onScreen(l, .{ p[0] + ax, p[1] + ay }) });
+        }
+    } else {
+        var outline: [65][2]f64 = undefined;
+        for (&outline, 0..) |*o, i| {
+            const t = @as(f64, @floatFromInt(i)) / 64 * 2 * std.math.pi;
+            o.* = c.onScreen(l, .{ m.centre[0] + m.radius[0] * @cos(t), m.centre[1] + m.radius[1] * @sin(t) });
+        }
+        strokeLine(cr, &outline);
+    }
+    for (handlesOf(m.shape)) |h| drawHandle(cr, c.onScreen(l, handlePoint(place, h)));
 }
 
 fn dragCrop(c: *Canvas, dx: f64, dy: f64) void {
@@ -449,6 +656,7 @@ fn dragCrop(c: *Canvas, dx: f64, dy: f64) void {
 fn onDragUpdate(_: *anyopaque, dx: f64, dy: f64, ctx: ?*anyopaque) callconv(.c) void {
     const c: *Canvas = @ptrCast(@alignCast(ctx));
     if (!c.ready()) return;
+    if (c.drag == .mask) return c.dragMask(dx, dy);
     if (c.drag == .split) {
         const l = c.layout(c.zoom, c.centre);
         c.split = std.math.clamp((c.drag_centre[0] + dx - l.box[0]) / l.box[2], 0, 1);
@@ -461,7 +669,7 @@ fn onDragUpdate(_: *anyopaque, dx: f64, dy: f64, ctx: ?*anyopaque) callconv(.c) 
     gtk.gtk_gl_area_queue_render(c.area);
 }
 
-// What's drawn over the photo: the crop's frame and the before/after line.
+// What's drawn over the photo: the crop's frame, the before/after line, a mask's handles.
 fn drawOverlay(_: *anyopaque, cr: *gtk.Cairo, _: c_int, _: c_int, ctx: ?*anyopaque) callconv(.c) void {
     const c: *Canvas = @ptrCast(@alignCast(ctx));
     if (!c.ready()) return;
@@ -507,6 +715,7 @@ fn drawOverlay(_: *anyopaque, cr: *gtk.Cairo, _: c_int, _: c_int, ctx: ?*anyopaq
         gtk.cairo_arc(cr, x, by + bh / 2, 10, 0, 2 * std.math.pi);
         gtk.cairo_fill(cr);
     }
+    if (c.activeMask()) |m| c.drawMask(cr, l, m);
 }
 
 /// "Fit", or how big a photo pixel is on the screen.

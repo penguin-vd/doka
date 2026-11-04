@@ -6,4 +6,5 @@ test {
     _ = @import("src/app/sidebar.zig");
     _ = @import("src/app/slider.zig");
     _ = @import("src/app/crop.zig");
+    _ = @import("src/app/subject.zig");
 }

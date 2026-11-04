@@ -12,6 +12,7 @@ Needs Zig 0.16.0 and the system's `libvips`, `gtk4` and OpenGL.
 zig build -Doptimize=ReleaseSafe     # zig-out/bin/doka
 ./zig-out/bin/doka [folder]          # opens the folder, or the last one
 scripts/starter-looks.py             # twelve film looks into ~/.config/doka/looks (once)
+scripts/subject-model.py             # optional: click a subject to mask it (56 MB, once)
 scripts/setup.sh                     # for development: the git pre-commit (tests and the GPU probe)
 ```
 
@@ -50,6 +51,9 @@ its colour work into a new look (`bake_look`). If the app wasn't open, open it a
 | double-click a slider | Reset it |
 
 ## Credits
+
+Click-a-subject uses ONNX Runtime (MIT, Microsoft) and MobileSAM (Apache-2.0), downloaded by
+`scripts/subject-model.py`, not kept in this repository.
 
 The starter looks are converted from the RawTherapee Film Simulation Collection (CC BY-SA 4.0;
 Pat David, Pavlov Dmitry, Michael Ezra). They're downloaded by `scripts/starter-looks.py`, not

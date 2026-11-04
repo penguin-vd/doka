@@ -54,7 +54,80 @@ pub fn resized(r: Rect, corner: Corner, dx: f64, dy: f64, ratio: ?f64, photo: [2
     return .{ if (west) fx - nw else fx, if (north) fy - nh else fy, nw, nh };
 }
 
+/// How the last pass (finish.glsl) puts the photo on the output.
+pub const Geometry = struct {
+    rect: [4]f64 = .{ 0, 0, 1, 1 },
+    turns: u2 = 0,
+    flip: bool = false,
+    // Radians.
+    angle: f64 = 0,
+    // The rotated photo's size.
+    size: [2]f64,
+
+    fn fit(g: Geometry) f64 {
+        const s = @abs(@sin(g.angle));
+        const c = @cos(g.angle);
+        return @min(g.size[0] / (g.size[0] * c + g.size[1] * s), g.size[1] / (g.size[0] * s + g.size[1] * c));
+    }
+
+    /// A point of the output (0..1) in the photo as decoded: finish.glsl's source().
+    pub fn toPhoto(g: Geometry, out: [2]f64) [2]f64 {
+        const px = g.rect[0] + out[0] * g.rect[2];
+        const py = g.rect[1] + out[1] * g.rect[3];
+        const k = g.fit();
+        const qx = (px - 0.5) * g.size[0] * k;
+        const qy = (py - 0.5) * g.size[1] * k;
+        const s = @sin(g.angle);
+        const c = @cos(g.angle);
+        var x = (c * qx + s * qy) / g.size[0] + 0.5;
+        const y = (-s * qx + c * qy) / g.size[1] + 0.5;
+        if (g.flip) x = 1 - x;
+        return switch (g.turns) {
+            0 => .{ x, y },
+            1 => .{ y, 1 - x },
+            2 => .{ 1 - x, 1 - y },
+            3 => .{ 1 - y, x },
+        };
+    }
+
+    /// A point of the photo as decoded on the output (0..1); outside when it's cropped away.
+    pub fn fromPhoto(g: Geometry, photo: [2]f64) [2]f64 {
+        const u = photo[0];
+        const v = photo[1];
+        var x: f64, const y: f64 = switch (g.turns) {
+            0 => .{ u, v },
+            1 => .{ 1 - v, u },
+            2 => .{ 1 - u, 1 - v },
+            3 => .{ v, 1 - u },
+        };
+        if (g.flip) x = 1 - x;
+        const tx = (x - 0.5) * g.size[0];
+        const ty = (y - 0.5) * g.size[1];
+        const s = @sin(g.angle);
+        const c = @cos(g.angle);
+        const k = g.fit();
+        const px = (c * tx - s * ty) / k / g.size[0] + 0.5;
+        const py = (s * tx + c * ty) / k / g.size[1] + 0.5;
+        return .{ (px - g.rect[0]) / g.rect[2], (py - g.rect[1]) / g.rect[3] };
+    }
+};
+
 const testing = std.testing;
+
+test "a point of the photo maps to the output and back, however it's cropped and turned" {
+    for ([_]u2{ 0, 1, 2, 3 }) |turns| for ([_]bool{ false, true }) |flip| {
+        const g: Geometry = .{ .rect = .{ 0.1, 0.2, 0.6, 0.5 }, .turns = turns, .flip = flip, .angle = 0.2, .size = .{ 3000, 2000 } };
+        const back = g.toPhoto(g.fromPhoto(.{ 0.3, 0.7 }));
+        try testing.expectApproxEqAbs(0.3, back[0], 1e-9);
+        try testing.expectApproxEqAbs(0.7, back[1], 1e-9);
+    };
+}
+
+test "with nothing done to it, the output is the photo" {
+    const g: Geometry = .{ .size = .{ 3, 2 } };
+    try testing.expectEqual([2]f64{ 0.25, 0.75 }, g.toPhoto(.{ 0.25, 0.75 }));
+    try testing.expectEqual([2]f64{ 0.25, 0.75 }, g.fromPhoto(.{ 0.25, 0.75 }));
+}
 
 test "an aspect fits inside the photo, around where the crop was" {
     const r = fitAspect(.{ 0, 0, 1, 1 }, 1, .{ 3, 2 });

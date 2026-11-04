@@ -18,6 +18,8 @@ const Canvas = @import("app/canvas.zig");
 const Sidebar = @import("app/sidebar.zig");
 const Slider = @import("app/slider.zig");
 const LooksPanel = @import("app/looks_panel.zig");
+const MasksPanel = @import("app/masks_panel.zig");
+const Subject = @import("app/subject.zig");
 const Exporter = @import("app/exporter.zig");
 const ExportDialog = @import("app/export_dialog.zig");
 const tools = @import("app/tools.zig");
@@ -40,6 +42,8 @@ var preview_looks: Looks = undefined;
 var canvas: Canvas = undefined;
 var sidebar: Sidebar = undefined;
 var looks_panel: LooksPanel = undefined;
+var masks_panel: MasksPanel = undefined;
+var subject: Subject = undefined;
 var exporter: Exporter = undefined;
 var export_dialog: ExportDialog = undefined;
 var compare_button: *anyopaque = undefined;
@@ -145,6 +149,11 @@ const css =
     \\.look:hover, .look:active { color: #ececec; background: transparent; }
     \\.look.on { color: #f4f4f4; outline: 2px solid #f4f4f4; outline-offset: -2px; background: transparent; }
     \\.look-name { font-size: 11px; }
+    \\.mask-detail { margin-top: 8px; padding-top: 12px; border-top: 1px solid #363636; }
+    \\button.layer { background: transparent; color: #b8b8b8; }
+    \\button.layer:hover { background: #333333; color: #ececec; }
+    \\button.layer.on, .layer-row.on { background: #3d3d3d; color: #f4f4f4; border-radius: 3px; }
+    \\.layer-row.on button.layer { background: transparent; color: #f4f4f4; }
     \\.shader-detail { padding: 2px 0 8px 10px; border-left: 1px solid #4c4c4c; }
     \\.dialog { padding: 16px; }
     \\.warning-text { color: #e3a878; font-size: 12px; }
@@ -165,6 +174,7 @@ var fields = [_]Field{
     .{ .group = "detail", .field = "sharpen", .label = "Sharpen", .min = 0, .max = 100, .unit = .plain },
     .{ .group = "detail", .field = "noise", .label = "Noise reduction", .min = 0, .max = 100, .unit = .plain },
 };
+var detail_title: *anyopaque = undefined;
 const section_before = [_]struct { index: usize, title: [:0]const u8 }{
     .{ .index = 0, .title = "Light" },
     .{ .index = 4, .title = "Colour" },
@@ -186,6 +196,7 @@ fn readField(r: Recipe, group: []const u8, field: []const u8) f32 {
 
 fn onFieldChanged(s: *Slider, v: f64, gesture: u64) void {
     const f: *Field = @ptrCast(@alignCast(s.config.ctx));
+    if (masks_panel.selected != null and std.mem.eql(u8, f.group, "edits")) return masks_panel.setEdit(f.field, v, gesture);
     var buf: [128]u8 = undefined;
     const patch = std.fmt.bufPrint(&buf, "{{\"{s}\":{{\"{s}\":{d}}}}}", .{ f.group, f.field, v }) catch return;
     app.edit(patch, gesture) catch |err| return log.err("edit: {t}", .{err});
@@ -197,7 +208,16 @@ fn syncControls() void {
     var scratch: std.heap.ArenaAllocator = .init(gpa);
     defer scratch.deinit();
     const r = app.recipe(scratch.allocator()) catch Recipe{};
-    for (&fields) |*f| f.slider.set(readField(r, f.group, f.field));
+    masks_panel.sync(r);
+    const layer = masks_panel.layer(r);
+    var shown = r;
+    if (layer) |m| shown.edits = m.edits;
+    for (&fields) |*f| f.slider.set(readField(shown, f.group, f.field));
+    // Sharpening and noise reduction are for the whole photo.
+    gtk.gtk_widget_set_visible(detail_title, @intFromBool(layer == null));
+    for (&fields) |*f| {
+        if (std.mem.eql(u8, f.group, "detail")) gtk.gtk_widget_set_visible(f.slider.widget, @intFromBool(layer == null));
+    }
     syncCrop(r);
     if (active_tab == .looks) looks_panel.update();
 }
@@ -385,6 +405,7 @@ fn syncHeader() void {
 
 // The open photo changed: everything but the canvas follows at once, the canvas when it's decoded.
 fn photoChanged() void {
+    masks_panel.reset();
     syncControls();
     syncHeader();
     syncExif();
@@ -458,6 +479,7 @@ fn redoStep() void {
 fn openFolder(path: [:0]const u8) void {
     app.openFolder(path) catch |err| return log.err("can't open {s}: {t}", .{ path, err });
     const f = &app.folder.?;
+    Pipeline.masks_root = f.path;
     photos.setRoot(f.path) catch return;
     if (decoding) |d| gpa.free(d);
     decoding = null;
@@ -552,6 +574,7 @@ fn onRedo(_: *anyopaque, _: ?*anyopaque) callconv(.c) void {
     redoStep();
 }
 fn onResetSliders(_: *anyopaque, _: ?*anyopaque) callconv(.c) void {
+    if (masks_panel.selected != null) return masks_panel.resetEdits();
     app.edit("{\"edits\":null,\"detail\":null}", 0) catch return;
     syncControls();
     edited();
@@ -659,8 +682,17 @@ fn sectionTitle(text: [*:0]const u8) *anyopaque {
 fn buildAdjust() *anyopaque {
     const panel = gtk.gtk_box_new(gtk.vertical, 8);
     gtk.gtk_widget_add_css_class(panel, "panel-body");
+    masks_panel.create();
+    gtk.gtk_box_append(panel, masks_panel.widget);
     for (&fields, 0..) |*f, i| {
-        for (section_before) |section| if (section.index == i) gtk.gtk_box_append(panel, sectionTitle(section.title));
+        for (section_before) |section| if (section.index == i) {
+            const heading = sectionTitle(section.title);
+            if (std.mem.eql(u8, section.title, "Detail")) {
+                gtk.gtk_box_append(panel, masks_panel.mixer_widget);
+                detail_title = heading;
+            }
+            gtk.gtk_box_append(panel, heading);
+        };
         f.slider = Slider.create(gpa, .{ .label = f.label, .min = f.min, .max = f.max, .step = f.step, .unit = f.unit, .on_change = onFieldChanged, .ctx = f });
         gtk.gtk_box_append(panel, f.slider.widget);
     }
@@ -669,7 +701,12 @@ fn buildAdjust() *anyopaque {
     gtk.gtk_widget_set_halign(reset, gtk.align_start);
     connect(reset, "clicked", &onResetSliders, null);
     gtk.gtk_box_append(panel, reset);
-    return panel;
+    // Room for a mask's own controls on any window.
+    const scrolled = gtk.gtk_scrolled_window_new();
+    gtk.gtk_scrolled_window_set_policy(scrolled, 2, 1);
+    gtk.gtk_scrolled_window_set_child(scrolled, panel);
+    gtk.gtk_widget_set_vexpand(scrolled, 1);
+    return scrolled;
 }
 
 fn onTab(button: *anyopaque, ctx: ?*anyopaque) callconv(.c) void {
@@ -679,6 +716,7 @@ fn onTab(button: *anyopaque, ctx: ?*anyopaque) callconv(.c) void {
     app.tab = @tagName(tab);
     gtk.gtk_stack_set_visible_child_name(tab_stack, @tagName(tab));
     canvas.setCropMode(tab == .crop);
+    masks_panel.setActive(tab == .adjust);
     looks_panel.setVisible(tab == .looks);
     syncControls();
 }
@@ -870,7 +908,7 @@ fn renderShot(a: std.mem.Allocator, shot: App.Shot) !void {
     const h: c_int = @max(1, @as(c_int, @intFromFloat(@round(@as(f64, @floatFromInt(size[1])) * scale))));
     var t = try Pipeline.target(w, h, gl.RGBA8, gl.UNSIGNED_BYTE);
     defer t.free();
-    pipe.render(r, .{ .fbo = t.fbo, .width = w, .height = h, .dither = 1.0 / 255.0 });
+    pipe.render(r, .{ .fbo = t.fbo, .width = w, .height = h, .dither = 1.0 / 255.0, .show_mask = shot.show_mask });
     gl.glBindFramebuffer(gl.FRAMEBUFFER, t.fbo);
     const count: usize = @intCast(w * h);
     const px = try a.alloc(u8, count * 4);
@@ -1114,6 +1152,9 @@ pub fn main(init: std.process.Init) !u8 {
     canvas = .{ .gpa = gpa, .photos = &photos, .looks = &looks };
     sidebar = .{ .gpa = gpa, .app = &app, .photos = &photos, .on_pick = pick };
     looks_panel = .{ .gpa = gpa, .app = &app, .canvas = &canvas, .library = &library, .edited = edited, .preview_looks = &preview_looks };
+    subject = .{ .gpa = gpa, .io = init.io, .pool = &pool, .models_dir = try std.fmt.allocPrint(arena, "{s}/models", .{config_dir}) };
+    app.subject = &subject;
+    masks_panel = .{ .gpa = gpa, .app = &app, .canvas = &canvas, .subject = &subject, .edited = edited, .layer_changed = syncControls };
 
     const application = gtk.gtk_application_new("app.doka.Doka", gtk.non_unique);
     defer gtk.g_object_unref(application);
