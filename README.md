@@ -12,9 +12,25 @@ Needs Zig 0.16.0 and the system's `libvips`, `gtk4` and OpenGL.
 zig build -Doptimize=ReleaseSafe     # zig-out/bin/doka
 ./zig-out/bin/doka [folder]          # opens the folder, or the last one
 scripts/starter-looks.py             # twelve film looks into ~/.config/doka/looks (once)
-scripts/subject-model.py             # optional: click a subject to mask it (56 MB, once)
 scripts/setup.sh                     # for development: the git pre-commit (tests and the GPU probe)
 ```
+
+## Package
+
+```sh
+scripts/package.sh                   # this host's own, in zig-out/dist/
+scripts/package.sh linux             # Doka-<arch>.AppImage, built in a container (docker or podman)
+PACKAGE_PLATFORM=linux/amd64 scripts/package.sh linux   # another architecture
+```
+
+The AppImage carries its libraries and runs on glibc 2.39 or newer (Ubuntu 24.04, Debian 13). Only
+OpenGL and its driver, glibc and libstdc++ come from the system. Without FUSE: `--appimage-extract-and-run`.
+It needs macOS 26 or newer on Apple Silicon, and isn't notarized: see below for the first launch.
+
+A package holds the twelve starter looks and copies them to `~/.config/doka/looks` when there are none.
+`scripts/package.sh` makes them first, so it needs the `vips` command and downloads 420 MB once.
+
+To open `Doka.app` from someone else, or after a download, once: `xattr -dr com.apple.quarantine Doka.app`.
 
 ## Claude Code
 
@@ -58,9 +74,9 @@ its colour work into a new look (`bake_look`). It sees up to 30 photos at once o
 
 ## Credits
 
-Click-a-subject uses ONNX Runtime (MIT, Microsoft) and MobileSAM (Apache-2.0), downloaded by
-`scripts/subject-model.py`, not kept in this repository.
+Click-a-subject uses ONNX Runtime (MIT, Microsoft) and MobileSAM (Apache-2.0), downloaded when
+`+ Subject` is first clicked (or by `doka --subject-model`), not kept in this repository.
 
 The starter looks are converted from the RawTherapee Film Simulation Collection (CC BY-SA 4.0;
-Pat David, Pavlov Dmitry, Michael Ezra). They're downloaded by `scripts/starter-looks.py`, not
-kept in this repository; a `CREDITS.txt` goes beside them.
+Pat David, Pavlov Dmitry, Michael Ezra). They're made by `scripts/starter-looks.py`, not kept in
+this repository; packages carry them, and a `CREDITS.txt` goes beside them.

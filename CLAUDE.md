@@ -19,9 +19,10 @@ zig build probe        # no window: the pipeline's tests on the GPU, and an expo
 zig build -Doptimize=ReleaseSafe   # the build to actually use: a plain `zig build` is a slower debug one
 ./zig-out/bin/doka photo.jpg --check out.ppm   # no window: the photo through the pipeline, as a picture
                        # never open a visible window: the owner tests the window on their own screen
+scripts/package.sh     # the AppImage (in a container) or Doka.app, libraries inside, in zig-out/dist
 scripts/setup.sh       # once per clone: git's pre-commit (format, changelog, test, probe)
 scripts/starter-looks.py   # twelve film looks into ~/.config/doka/looks (downloads 420 MB once)
-scripts/subject-model.py   # click-a-subject's ONNX Runtime and model into ~/.config/doka/models (56 MB once)
+./zig-out/bin/doka --subject-model   # no window: click-a-subject's download (also the + Subject button)
 ```
 
 Layout: `src/main.zig` is the window; `src/app/` the rest of the editor (`app.zig` the state with no window,

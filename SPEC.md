@@ -190,7 +190,7 @@ Recipes live in a hidden `.photo-editor/` folder at the root of the folder you o
 | `masks[].shape` | `whole`, `linear`, `radial`, `subject` | Coordinates are 0 to 1 of the photo as decoded, y down, so a mask stays on its pixels through crop and rotation |
 | `masks[].from`, `.to` | x, y | Linear: full effect at `from`, nothing at `to` |
 | `masks[].centre`, `.radius`, `.feather` | x, y; shares of width and height; 0 to 100 | Radial: an ellipse, fading inwards from its edge |
-| `masks[].file`, `.points` | A picture in `.photo-editor/masks/`; x, y, and 1 "this" or 0 "not this" | Subject: found from those points (optional download, `scripts/subject-model.py`) |
+| `masks[].file`, `.points` | A picture in `.photo-editor/masks/`; x, y, and 1 "this" or 0 "not this" | Subject: found from those points (optional download, `+ Subject` (asks, then downloads once)) |
 | `masks[].blur` | 0 to 100 | A lens-like blur, up to 2.5% of the long edge; what's outside the mask doesn't bleed in |
 | `masks[].brightness` | `min`, `max`: 0 to 100 | Reads the original photo, so other edits don't move it |
 | `masks[].hue` | `centre` 0 to 360, `width` 0 to 180 | OKLCH degrees, reads the original photo; width 0 is any colour |
@@ -266,7 +266,7 @@ Budgets to test against, measured on a 24-megapixel JPEG.
 | Export one photo | < 2 s | GPU render in tiles, then libvips encode |
 | Claude request round trip | < 300 ms with screenshot | Localhost HTTP; screenshot as a 1024 px JPEG |
 | Idle memory | < 150 MB | Keep only the current photo at full size |
-| Download size | < 10 MB | System GTK and libvips; nothing bundled |
+| Download size | < 50 MB | The AppImage and the `.app` carry GTK, libvips and the rest; only OpenGL, glibc and libstdc++ stay the system's (`scripts/package.sh`) |
 
 ## Out of scope for v1
 
@@ -274,7 +274,7 @@ Budgets to test against, measured on a 24-megapixel JPEG.
 - Brushes, healing, and layers beyond masks (masks are planned separately: `docs/masks-plan.md`)
 - Library features: ratings, tags, albums, search (the folder browser's filters and picks are all there is)
 - Cloud sync, accounts, sharing
-- Windows and macOS builds
+- Windows builds
 - Saved presets that apply a whole recipe in one click (v2)
 
 ## Build order

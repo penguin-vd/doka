@@ -135,7 +135,7 @@ fn explain(err: anyerror) []const u8 {
         error.BadName => "names are letters, digits, spaces, - and _",
         error.BadParamName => "a parameter name must be a GLSL name (letters, digits, _)",
         error.NoSuchShader, error.FileNotFound => "no such shader (see list_shaders)",
-        error.ModelMissing => "this needs its download once: the user runs scripts/subject-model.py and restarts Doka",
+        error.ModelMissing => "this needs its download once: the user clicks + Subject under Layers in Doka",
         error.TooManyMasks => "a photo holds at most 8 masks",
         error.TooManyPoints => "a mask takes at most 16 points",
         error.NothingSelected => "the user hasn't selected any photos: they Ctrl-click at least two in the sidebar",

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Doka
+Comment=A small, fast photo editor
+Exec=doka %f
+Icon=doka
+Categories=Graphics;Photography;
+MimeType=image/jpeg;inode/directory;

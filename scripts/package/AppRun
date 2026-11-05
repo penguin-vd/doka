@@ -1,0 +1,19 @@
+#!/bin/sh
+# Points GTK, GIO, gdk-pixbuf and libvips at what's in the AppImage, not at the system's.
+here=$(dirname "$(readlink -f "$0")")
+export XDG_DATA_DIRS="$here/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+export GSETTINGS_SCHEMA_DIR="$here/usr/share/glib-2.0/schemas"
+export GIO_MODULE_DIR="$here/usr/lib/gio/modules"
+# gdk-pixbuf wants the loader's absolute path, and the AppImage mounts somewhere new each run.
+cache="${XDG_CACHE_HOME:-$HOME/.cache}/doka"
+mkdir -p "$cache"
+sed "s|^\"libpixbufloader|\"$here/usr/lib/gdk-pixbuf/loaders/libpixbufloader|" "$here/usr/lib/gdk-pixbuf/loaders.cache" >"$cache/loaders.cache"
+export GDK_PIXBUF_MODULE_FILE="$cache/loaders.cache"
+export VIPSHOME="$here/usr"
+# The starter looks, when there are none: from then on they're the user's to change.
+looks="${XDG_CONFIG_HOME:-$HOME/.config}/doka/looks"
+if ! ls "$looks"/*.cube >/dev/null 2>&1; then
+    mkdir -p "$looks"
+    cp "$here/usr/share/doka/looks"/* "$looks/"
+fi
+exec "$here/usr/bin/doka" "$@"

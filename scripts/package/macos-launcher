@@ -1,0 +1,18 @@
+#!/bin/sh
+# Points GTK, gdk-pixbuf and libvips at what's in the app, not at Homebrew's.
+contents=$(cd "$(dirname "$0")/.." && pwd)
+export XDG_DATA_DIRS="$contents/Resources/share"
+export GSETTINGS_SCHEMA_DIR="$contents/Resources/share/glib-2.0/schemas"
+# gdk-pixbuf wants the loader's absolute path, and the app can be moved.
+cache="$HOME/Library/Caches/Doka"
+mkdir -p "$cache"
+sed "s|^\"libpixbufloader|\"$contents/Resources/lib/gdk-pixbuf/loaders/libpixbufloader|" "$contents/Resources/lib/gdk-pixbuf/loaders.cache" >"$cache/loaders.cache"
+export GDK_PIXBUF_MODULE_FILE="$cache/loaders.cache"
+export VIPSHOME="$contents/Resources"
+# The starter looks, when there are none: from then on they're the user's to change.
+looks="${XDG_CONFIG_HOME:-$HOME/.config}/doka/looks"
+if ! ls "$looks"/*.cube >/dev/null 2>&1; then
+    mkdir -p "$looks"
+    cp "$contents/Resources/share/doka/looks"/* "$looks/"
+fi
+exec "$contents/MacOS/doka-bin" "$@"

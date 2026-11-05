@@ -9,4 +9,5 @@ test {
     _ = @import("src/app/masks_panel.zig");
     _ = @import("src/app/sheet.zig");
     _ = @import("src/app/subject.zig");
+    _ = @import("src/app/subject_fetch.zig");
 }

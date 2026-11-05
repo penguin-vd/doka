@@ -7,6 +7,7 @@ const App = @import("app.zig");
 const Canvas = @import("canvas.zig");
 const Slider = @import("slider.zig");
 const Subject = @import("subject.zig");
+const SubjectFetch = @import("subject_fetch.zig");
 const Recipe = core.Recipe;
 const Mask = Recipe.Mask;
 
@@ -16,6 +17,7 @@ gpa: std.mem.Allocator,
 app: *App,
 canvas: *Canvas,
 subject: ?*Subject = null,
+fetching: bool = false,
 // The photo's edits changed.
 edited: *const fn () void,
 // Another layer was picked, or the list changed: the sliders follow.
@@ -66,7 +68,7 @@ light: *Slider = undefined,
 const add_hint = "Click the subject. Shift-click what doesn't belong.";
 const wait_hint = "Finding it\u{2026}";
 const failed_hint = "Couldn't find it. Try another spot.";
-const missing_hint = "Needs its download: run scripts/subject-model.py, then restart Doka.";
+const missing_hint = "Needs its download: click + Subject.";
 
 const Row = struct { panel: *Panel, index: usize, name: *anyopaque = undefined, eye: *anyopaque = undefined };
 
@@ -301,10 +303,7 @@ pub fn sync(p: *Panel, r: Recipe) void {
         gtk.gtk_widget_set_tooltip_text(row.eye, if (mask.enabled) "Switch this mask off" else "Switch this mask on");
     }
     for (p.add_buttons) |b| gtk.gtk_widget_set_sensitive(b, @intFromBool(r.masks.len < Recipe.max_masks));
-    if (!p.subjectReady()) {
-        gtk.gtk_widget_set_sensitive(p.add_buttons[0], 0);
-        gtk.gtk_widget_set_tooltip_text(p.add_buttons[0], missing_hint);
-    }
+    p.showFetch();
     const m = p.layer(r);
     gtk.gtk_widget_set_visible(p.detail, @intFromBool(m != null));
     gtk.gtk_widget_set_visible(p.mixer_widget, @intFromBool(m != null));
@@ -335,6 +334,27 @@ pub fn sync(p: *Panel, r: Recipe) void {
         p.light.set(band.light);
     } else p.showing = false;
     p.pushToCanvas();
+}
+
+fn showFetch(p: *Panel) void {
+    gtk.gtk_button_set_label(p.add_buttons[0], if (p.fetching) "Downloading\u{2026}" else "+ Subject");
+    if (p.fetching) gtk.gtk_widget_set_sensitive(p.add_buttons[0], 0);
+    gtk.gtk_widget_set_tooltip_text(p.add_buttons[0], if (p.subjectReady()) "Click a person or thing to mask it" else "Download what click-a-subject needs, once");
+}
+
+fn onFetchStart(ctx: *anyopaque) void {
+    const p: *Panel = @ptrCast(@alignCast(ctx));
+    p.fetching = true;
+    p.showFetch();
+}
+
+fn onFetchDone(ctx: *anyopaque) void {
+    const p: *Panel = @ptrCast(@alignCast(ctx));
+    p.fetching = false;
+    gtk.gtk_widget_set_sensitive(p.add_buttons[0], 1);
+    p.showFetch();
+    gtk.gtk_widget_set_sensitive(p.pick_button, @intFromBool(p.subjectReady()));
+    if (p.subjectReady()) gtk.gtk_label_set_text(p.pick_status, add_hint);
 }
 
 fn subjectReady(p: *const Panel) bool {
@@ -506,7 +526,11 @@ test "a new mask's name is the first that's free" {
     try std.testing.expectEqualStrings("Gradient 3", try freeName(a, &two, "Gradient"));
 }
 
-fn onAddSubject(_: *anyopaque, ctx: *Panel) callconv(.c) void {
+fn onAddSubject(button: *anyopaque, ctx: *Panel) callconv(.c) void {
+    if (!ctx.subjectReady()) {
+        if (ctx.subject) |s| SubjectFetch.ask(s, gtk.gtk_widget_get_root(button), ctx, onFetchStart, onFetchDone);
+        return;
+    }
     ctx.showing = true;
     ctx.picking = true;
     ctx.points.clearRetainingCapacity();

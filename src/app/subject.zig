@@ -1,4 +1,4 @@
-//! Click a subject: MobileSAM through ONNX Runtime, both downloaded by scripts/subject-model.py and
+//! Click a subject: MobileSAM through ONNX Runtime, both downloaded once (subject_fetch.zig) and
 //! loaded only when first asked for, so the app starts as fast without them and works without them.
 //! The model's coarse mask is refined against the photo's own edges, saved as a small PNG under
 //! `.photo-editor/masks/`, and from there it's a mask like any other.

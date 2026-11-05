@@ -1,6 +1,7 @@
 //! The editor: GTK 4 and OpenGL over the recipes and shaders. Claude reaches it over MCP.
 //!   doka [folder]             the editor, on that folder (or the last one)
 //!   doka photo.jpg --check out.ppm    no window: draws the photo once and saves the picture
+//!   doka --subject-model              no window: click-a-subject's download
 //!   doka --probe              no window: the pipeline's tests on the GPU
 const builtin = @import("builtin");
 const std = @import("std");
@@ -12,6 +13,7 @@ const gtk = @import("app/gtk.zig");
 const gl = @import("app/gl.zig");
 const Pipeline = @import("app/pipeline.zig");
 const selftest = @import("app/selftest.zig");
+const subject_fetch = @import("app/subject_fetch.zig");
 const App = @import("app/app.zig");
 const Photos = @import("app/photos.zig");
 const Looks = @import("app/looks.zig");
@@ -1119,7 +1121,14 @@ fn exportGlCurrent() bool {
 }
 
 fn onActivate(application: *anyopaque, _: ?*anyopaque) callconv(.c) void {
-    if (gtk.gtk_settings_get_default()) |settings| gtk.g_object_set(settings, "gtk-interface-color-scheme", @as(c_int, 2), @as(?*anyopaque, null));
+    // The packaged builds have an older GTK, without gtk-interface-color-scheme (4.20).
+    if (gtk.gtk_settings_get_default()) |settings| {
+        if (gtk.gtk_get_minor_version() >= 20) {
+            gtk.g_object_set(settings, "gtk-interface-color-scheme", @as(c_int, 2), @as(?*anyopaque, null));
+        } else {
+            gtk.g_object_set(settings, "gtk-application-prefer-dark-theme", @as(c_int, 1), @as(?*anyopaque, null));
+        }
+    }
     const provider = gtk.gtk_css_provider_new();
     gtk.gtk_css_provider_load_from_string(provider, css);
     gtk.gtk_style_context_add_provider_for_display(gtk.gdk_display_get_default().?, provider, gtk.css_priority_application);
@@ -1226,6 +1235,14 @@ pub fn main(init: std.process.Init) !u8 {
                 std.debug.print("probe: {t}\n", .{err});
                 return 1;
             };
+        } else if (std.mem.eql(u8, arg, "--subject-model")) {
+            const models = try std.fmt.allocPrint(arena, "{s}/models", .{try Settings.configDir(arena, init.environ_map)});
+            subject_fetch.install(gpa, init.io, models) catch |err| {
+                std.debug.print("download failed: {t}\n", .{err});
+                return 1;
+            };
+            std.debug.print("click-a-subject is ready: {s}\n", .{models});
+            return 0;
         } else start_folder = arg;
     }
     try core.vips.init("doka");

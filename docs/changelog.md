@@ -106,6 +106,9 @@ Changed for what someone would notice, a line under Decided for a choice whose r
   sending them all. The sharpness number no longer changes with the size of the sheet.
 - Runs on macOS: the same GTK 4 and OpenGL editor, from Homebrew (`gtk4`, `vips`, `adwaita-icon-theme`,
   `onnxruntime`). Click-a-subject finds its runtime as `libonnxruntime.dylib` there.
+- Doka packages itself: `scripts/package.sh` makes an AppImage or a `Doka.app` with its libraries, the twelve
+  starter looks and an icon inside.
+- `+ Subject` offers click-a-subject's download itself, with no script and no restart; `scripts/subject-model.py` is gone.
 
 ### Decided
 
@@ -190,3 +193,8 @@ Changed for what someone would notice, a line under Decided for a choice whose r
 - No bulk edit: the owner edits photos one at a time with Claude.
 - A closer look decodes the photo at full size in the contact sheet's pipeline and gives its big render
   targets back afterwards: looking at a detail shouldn't hold half a gigabyte of the GPU's memory.
+- Packaged as a bundle, not statically linked: GTK has no real static build, and the OpenGL driver needs a
+  dynamic glibc anyway, so a static binary would still not be self-contained. The AppImage leaves libstdc++
+  to the system, since its OpenGL driver may need a newer one and only one can load.
+- The model's download goes through curl: Zig's TLS can't reach GitHub's release servers. Its own ONNX
+  Runtime is pinned on every platform, since subject.zig's API by hand follows that version.
