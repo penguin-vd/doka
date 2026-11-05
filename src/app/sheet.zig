@@ -10,6 +10,7 @@ const gl = @import("gl.zig");
 const App = @import("app.zig");
 const Mcp = @import("mcp.zig");
 const Pool = @import("jobs.zig");
+const memory = @import("memory.zig");
 const Pipeline = @import("pipeline.zig");
 const Looks = @import("looks.zig");
 const tools = @import("tools.zig");
@@ -420,7 +421,7 @@ fn doneCloseup(task: *Pool.Task) void {
         s.gpa.free(c.path);
         s.gpa.free(c.recipe_json);
         s.gpa.destroy(c);
-        _ = malloc_trim(0);
+        memory.trim();
     }
     var arena: std.heap.ArenaAllocator = .init(s.gpa);
     defer arena.deinit();
@@ -430,8 +431,6 @@ fn doneCloseup(task: *Pool.Task) void {
     };
     tools.finishScreenshot(s.app, .{ .call = c.request.call, .text = c.request.text }, base64, "");
 }
-
-extern fn malloc_trim(pad: usize) c_int;
 
 fn composeCloseup(s: *Sheet, a: std.mem.Allocator, c: *const Closeup) ![]const u8 {
     const l = &(c.linear orelse return error.NoPhoto);

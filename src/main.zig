@@ -2,6 +2,7 @@
 //!   doka [folder]             the editor, on that folder (or the last one)
 //!   doka photo.jpg --check out.ppm    no window: draws the photo once and saves the picture
 //!   doka --probe              no window: the pipeline's tests on the GPU
+const builtin = @import("builtin");
 const std = @import("std");
 const core = @import("photo-core");
 const Pool = @import("app/jobs.zig");
@@ -1122,6 +1123,12 @@ fn onActivate(application: *anyopaque, _: ?*anyopaque) callconv(.c) void {
     const provider = gtk.gtk_css_provider_new();
     gtk.gtk_css_provider_load_from_string(provider, css);
     gtk.gtk_style_context_add_provider_for_display(gtk.gdk_display_get_default().?, provider, gtk.css_priority_application);
+    // The icons come from the Adwaita theme, which Linux has by default; on a Mac, Homebrew's copy.
+    if (builtin.os.tag == .macos) {
+        const theme = gtk.gtk_icon_theme_get_for_display(gtk.gdk_display_get_default().?);
+        gtk.gtk_icon_theme_add_search_path(theme, "/opt/homebrew/share/icons");
+        gtk.gtk_icon_theme_add_search_path(theme, "/usr/local/share/icons");
+    }
 
     window = gtk.gtk_application_window_new(application);
     gtk.gtk_window_set_title(window, "Doka");

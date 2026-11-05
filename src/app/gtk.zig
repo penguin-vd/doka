@@ -100,6 +100,8 @@ pub extern fn g_file_get_path(file: *anyopaque) ?[*:0]u8;
 pub extern fn gtk_settings_get_default() ?*anyopaque;
 pub extern fn gtk_css_provider_new() *anyopaque;
 pub extern fn gtk_css_provider_load_from_string(provider: *anyopaque, css: [*:0]const u8) void;
+pub extern fn gtk_icon_theme_get_for_display(display: *anyopaque) *anyopaque;
+pub extern fn gtk_icon_theme_add_search_path(theme: *anyopaque, path: [*:0]const u8) void;
 pub extern fn gtk_style_context_add_provider_for_display(display: *anyopaque, provider: *anyopaque, priority: c_uint) void;
 pub extern fn gtk_widget_add_css_class(widget: *anyopaque, name: [*:0]const u8) void;
 pub extern fn gtk_widget_remove_css_class(widget: *anyopaque, name: [*:0]const u8) void;

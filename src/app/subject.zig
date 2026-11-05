@@ -2,16 +2,18 @@
 //! loaded only when first asked for, so the app starts as fast without them and works without them.
 //! The model's coarse mask is refined against the photo's own edges, saved as a small PNG under
 //! `.photo-editor/masks/`, and from there it's a mask like any other.
+const builtin = @import("builtin");
 const std = @import("std");
 const core = @import("photo-core");
 const Pool = @import("jobs.zig");
+const memory = @import("memory.zig");
 const Recipe = core.Recipe;
 
 const Subject = @This();
 
 const log = std.log.scoped(.subject);
 
-pub const library_name = "libonnxruntime.so";
+pub const library_name = if (builtin.os.tag == .macos) "libonnxruntime.dylib" else "libonnxruntime.so";
 pub const encoder_name = "mobile_sam_image_encoder.onnx";
 pub const decoder_name = "sam_mask_decoder_multi.onnx";
 
@@ -77,7 +79,7 @@ const Ort = struct {
     options: *anyopaque,
 
     fn f(o: Ort, comptime T: type, comptime index: usize) T {
-        return @ptrCast(o.table[index].?);
+        return @ptrCast(@alignCast(o.table[index].?));
     }
 
     fn check(o: Ort, status: Status) !void {
@@ -137,7 +139,7 @@ fn runtime(s: *Subject) !Ort {
         if (std.c.dlerror()) |e| log.err("{s}", .{e});
         return error.ModelMissing;
     };
-    const get_base: *const fn () callconv(.c) *const ApiBase = @ptrCast(std.c.dlsym(lib, "OrtGetApiBase") orelse return error.ModelMissing);
+    const get_base: *const fn () callconv(.c) *const ApiBase = @ptrCast(@alignCast(std.c.dlsym(lib, "OrtGetApiBase") orelse return error.ModelMissing));
     const table = get_base().get_api(api_version) orelse return error.ModelMissing;
     var o: Ort = .{ .table = table, .env = undefined, .memory = undefined, .options = undefined };
     var out: ?*anyopaque = null;
@@ -232,7 +234,7 @@ pub fn segment(s: *Subject, path: [:0]const u8, points: []const [3]f32) !Mask8 {
     if (points.len == 0) return error.BadArguments;
     s.mutex.lockUncancelable(s.io);
     defer s.mutex.unlock(s.io);
-    defer _ = malloc_trim(0);
+    defer memory.trim();
     const o = try s.runtime();
     const e = try s.encoded(path);
     if (s.decoder == null) {
@@ -304,8 +306,6 @@ pub fn segment(s: *Subject, path: [:0]const u8, points: []const [3]f32) !Mask8 {
     for (fine, pixels) |v, *out| out.* = @intFromFloat(@round(std.math.clamp(v, 0, 1) * 255));
     return .{ .width = e.width, .height = e.height, .pixels = pixels };
 }
-
-extern fn malloc_trim(pad: usize) c_int;
 
 /// A mask of `p` that follows the edges of `guide`: a guided filter (He, Sun, Tang), so a coarse
 /// mask's outline settles on the photo's own edges, down to hair. Both w×h, 0..1.

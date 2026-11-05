@@ -104,9 +104,13 @@ Changed for what someone would notice, a line under Decided for a choice whose r
 - Claude can check its own work: get_view looks at any part of the photo at its own pixels, with a mask
   painted on it if asked, and shows the original beside the edit. edit_mask changes one mask without
   sending them all. The sharpness number no longer changes with the size of the sheet.
+- Runs on macOS: the same GTK 4 and OpenGL editor, from Homebrew (`gtk4`, `vips`, `adwaita-icon-theme`,
+  `onnxruntime`). Click-a-subject finds its runtime as `libonnxruntime.dylib` there.
 
 ### Decided
 
+- On macOS, libvips is linked without pkg-config: its glib flags repeat GTK's, and dyld aborts on a
+  dylib loaded twice. The photo-core test binary keeps pkg-config, since it has no GTK to clash with.
 - Subject masks are saved as small PNGs in `.photo-editor/masks/`, named from what made them, so they
   look the same every time and open instantly. Undo needs the old ones, so removing a mask keeps its
   file. MobileSAM over bigger models: 1.2 s the first click on a photo and 0.2 s after, on the CPU,

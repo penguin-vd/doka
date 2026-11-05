@@ -5,6 +5,7 @@ const std = @import("std");
 const Io = std.Io;
 const core = @import("photo-core");
 const Pool = @import("jobs.zig");
+const memory = @import("memory.zig");
 const gtk = @import("gtk.zig");
 
 const Photos = @This();
@@ -131,7 +132,7 @@ const Decode = struct {
         self.gpa.free(d.path);
         defer self.gpa.destroy(d);
         // A decode's float buffers (tens of MB) go back to the system, not to glibc's arenas.
-        defer _ = malloc_trim(0);
+        defer memory.trim();
         if (d.generation != self.generation) {
             if (d.result) |*lin| lin.deinit(self.gpa);
             self.gpa.free(d.rel);
@@ -147,8 +148,6 @@ const Decode = struct {
         if (wanted or ok) self.on_decoded(name, edge, ok);
     }
 };
-
-extern fn malloc_trim(pad: usize) c_int;
 
 // Takes ownership of `rel` and `linear`.
 fn store(self: *Photos, rel: []u8, edge: u32, linear: core.decode.Linear) void {
@@ -242,7 +241,7 @@ const Thumb = struct {
             self.gpa.free(t.root);
             self.gpa.free(t.rel);
             self.gpa.destroy(t);
-            _ = malloc_trim(0);
+            memory.trim();
         }
         if (t.generation != self.generation) {
             if (t.texture) |x| gtk.g_object_unref(x);
